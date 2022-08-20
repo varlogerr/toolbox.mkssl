@@ -1,29 +1,72 @@
 #!/usr/bin/env bash
 
-# Path rules by example:
-# "./certs/localhost"  - relative to $(pwd)
-# "!./certs/localhost" - relative to the current conf file
-declare -A CONF=(
-  [is-tpl]='DELETE OR COMMENT THIS KEY'
-  # Output file prefix (without extension)
-  [out-prefix]="!./certs/$(basename -- "${0}" | sed -E 's/\.(sh|bash)$//')"
-  # Encrypt private key. Will prompt for pass or use
-  # `--passfile PASSFILE` option
+# {CONF_TPL}
+# # {CONFBLOCK}
+# # Configuration block. Ignored by force confgen
+#
+# BASE_DIR="{{ BASE_DIR }}"
+# CERTS_DIR="{{ CERTS_DIR }}"
+# CA_DIR="{{ CA_DIR }}"
+#
+# declare -A CONF=(
+#   # Output file prefix (without extension)
+#   [out-prefix]="{{ out-prefix }}"
+#   # Encrypt private key
+#   [encrypt]={{ encrypt }}
+#   # Can be more than 365 for CA. For servers 365 or below
+#   [days]={{ days }}
+#   [cn]="{{ cn }}"
+#   # Issuer cert path. Leave blank for self-signed
+#   [issuer-cert]="{{ issuer-cert }}"
+#   # Issuer key path. Ignored with no issuer-cert. When
+#   # blank, issuer-cert file will be used
+#   [issuer-key]="{{ issuer-key }}"
+#   # Domains and IPs for SAN. One per line, empty lines are
+#   # ignored. Leave blank for CA certificate generation
+#   [hosts]="{{ hosts }}"
+#   # Merge key into cert file
+#   [merge]={{ merge }}
+# )
+#
+# ## If you generated this configuration with a system wide
+# ## installed myssl tool, probably you'll want to use it
+# ## instead of stand alone code under CONFBLOCK.
+# ## In this case uncomment sourcing line below and remove
+# ## everything after CONFBLOCK.
+# # . "{{ SOURCE_SCRIPT }}"
+#
+# # {/CONFBLOCK}
+# {/CONF_TPL}
+
+declare -A DEF=(
+  # conf template only defaults
+  [SOURCE_SCRIPT]="$(realpath -- "${0}")"
+  [BASE_DIR]='$(dirname -- "${0}")'
+  [CERTS_DIR]='${BASE_DIR}/certs'
+  [CA_DIR]='${BASE_DIR}/ca'
+  [out-prefix]='${CERTS_DIR}/$(basename -s .sh -- "${0}")'
+  # common defaults
   [encrypt]=false
-  # Can be more than 365 for CA. For servers 365 or below
   [days]=365
   [cn]="Root CA"
-  # Issuer cert path (see path rules above). Leave blank
-  # for self-signed
   [issuer-cert]=""
-  # Issuer key path. Ignored with no issuer-cert. When
-  # blank, issuer-cert file will be used
   [issuer-key]=""
-  # Domains and IPs for SAN. One per line, empty lines are
-  # ignored. Leave blank for CA certificate generation
   [hosts]=""
-  # Merge key into cert file
   [merge]=false
+)
+
+# Ensure defaults
+[[ -n "${CONF+x}" ]] || declare -A CONF
+CONF+=(
+  # only avoid defaulting 'out-prefix'
+  [out-prefix]="${CONF[out-prefix]}"
+  [encrypt]="${CONF[encrypt]-${DEF[encrypt]}}"
+  [days]="${CONF[days]-${DEF[days]}}"
+  [cn]="${CONF[cn]-${DEF[cn]}}"
+  [issuer-cert]="${CONF[issuer-cert]-${DEF[issuer-cert]}}"
+  [issuer-key]="${CONF[issuer-key]-${DEF[issuer-key]}}"
+  [hosts]="${CONF[hosts]-${DEF[hosts]}}"
+  [merge]="${CONF[merge]-${DEF[merge]}}"
 )
 
 declare -a ERRBAG=()
@@ -55,149 +98,201 @@ log_fail_rc() {
   exit "${rc}"
 }
 
-fix_path() {
-  local path="${1}"
-  [[ "${path:0:3}" == '!./' ]] && {
-    path="$(realpath -- "$(dirname ${0})")/${path:3}"
-  }
-  printf -- '%s\n' "${path}"
+# https://gist.github.com/varlogerr/2c058af053921f1e9a0ddc39ab854577#file-sed-quote
+sed_quote_keyword() {
+  local keyword="${1-$(cat -)}"
+  sed -e 's/[]\/$*.^[]/\\&/g' <<< "${keyword}"
+}
+sed_quote_replace() {
+  local keyword="${1-$(cat -)}"
+  sed -e 's/[\/&]/\\&/g' <<< "${keyword}"
 }
 
-declare -a OPTS_HELP
-_opts_help() {
-  unset _opts_help
+_get_block() {
+  local tag_word="${1}"
+  local txt="${2}"
+  local tag_start="# {$tag_word}"
+  local tag_end="# {/$tag_word}"
 
-  local is_help=false
-  local -a sections
+  grep -A 999999 -Fx -- "${tag_start}" <<< "${txt}" \
+  | grep -B 999999 -Fx -- "${tag_end}"
+}
 
-  while :; do
-    [[ -n "${1+x}" ]] || break
+get_confblock() {
+  local txt="${1}"
 
-    case "${1}" in
-      -h|-\?|--help ) is_help=true ;;
-      description   ) sections+=("${1}") ;;
-      usage|opts    ) sections+=("${1}") ;;
-      env|demo      ) sections+=("${1}") ;;
-      *             ) ERRBAG+=("${1}") ;;
-    esac
+  _get_block CONFBLOCK "${1}"
+}
 
-    shift
-  done
-
-  OPTS_HELP+=("${is_help}")
-  [[ ${#sections[@]} -gt 0 ]] \
-    && OPTS_HELP+=("${sections[@]}") \
-    || OPTS_HELP+=(help)
-
-  # if help detected return 0 to reset input args
-  ${is_help} && return 0
-
-  ERRBAG=()
-  return 1
-}; _opts_help "${@}" && set --
-
-# OPTS_CONFGEN=(IS_CONFGEN FORCE DEST...)
-declare -a OPTS_CONFGEN
-_opts_confgen() {
-  unset _opts_confgen
-
-  local endopts=false
-  local is_confgen=false
-  local force=false
-  local -a dests
+get_conftpl() {
+  local txt="${1}"
+  local -a sed_opts
 
   local key
-  while :; do
-    [[ -n "${1+x}" ]] || break
-    ${endopts} && key='*' || key="${1}"
-
-    case "${key}" in
-      --          ) endopts=true ;;
-      --confgen   ) is_confgen=true ;;
-      -f|--force  ) force=true ;;
-      -*          ) ERRBAG+=("${1}") ;;
-      *           ) dests+=("${1}") ;;
-    esac
-
-    shift
+  local replace
+  for key in "${!DEF[@]}"; do
+    key="$(sed_quote_keyword "${key}")"
+    replace="$(sed_quote_replace "${DEF[$key]}")"
+    sed_opts+=(-e "s/{{\s*${key}\s*}}/${replace}/g")
   done
 
-  OPTS_CONFGEN+=("${is_confgen}" "${force}")
-  [[ ${#dests} -gt 0 ]] && OPTS_CONFGEN+=("${dests[@]}")
+  _get_block CONF_TPL "${1}" | sed -E 's/#\s?//' \
+  | tail -n +2 | head -n -1 | sed "${sed_opts[@]}"
+}
 
-  # if confgen detected return 0 to reset input args
-  ${is_confgen} && return 0
+get_body() {
+  local txt="${1}"
+  local ignore_tag='# {CONF_TPL}'
 
-  ERRBAG=()
-  return 1
-}; _opts_confgen "${@}" && set --
+  grep -A 999999 -Fx -- "${ignore_tag}" <<< "${txt}"
+}
 
-# extend CONF with inline only options,
-# commented ones are placeholders
-CONF+=(
-  # [passfile]=
-  # [ca_passfile]=
-  [force]=false
-)
-_opts_main() {
-  unset _opts_main
+{
+  declare -a OPTS_HELP
+  _opts_help() {
+    unset _opts_help
 
-  declare -A overrides
-  local overkeys_rex="$(print_msg "
-    issuer-key
-    issuer-cert
-    days
-    cn
-  " | tr '\n' '|' | sed 's/|$//')"
-  declare key
-  declare endopts=false
-  while :; do
-    [[ -n "${1+x}" ]] || break
-    ${endopts} && key='*' || key="${1}"
+    local -a available_sections=(
+      description usage opts env demo import
+    )
 
-    [[ "${key}" =~ ^--(${overkeys_rex})$ ]] && {
-      # override keys from CONF
-      overrides["${1:2}"]="${2}"
-      shift; shift; continue
-    }
+    local is_help=false
+    local -a sections
 
-    case "${key}" in
-      --passfile    ) shift; [[ -n "${1+x}" ]] && CONF[passfile]="${1}" ;;
-      --ca-passfile ) shift; [[ -n "${1+x}" ]] && CONF[ca_passfile]="${1}" ;;
-      -f|--force    ) CONF[force]=true ;;
-      # override keys from CONF
-      --encrypt     ) overrides[encrypt]=true ;;
-      --merge       ) overrides[merge]=true ;;
-      --host        ) shift; overrides[hosts]+="${overrides[hosts]+$'\n'}${1}" ;;
-      --            ) endopts=true ;;
-      -*            ) ERRBAG+=("${1}") ;;
-      *             ) overrides[out-prefix]="${1}" ;;
-    esac
+    local key
+    local sections_rex="$(printf -- '%s\n' "${available_sections[@]}" \
+      | tr '\n' '|' | sed 's/|$//')"
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      key="${1}"; shift
 
-    shift
-  done
+      [[ "${key}" =~ ^(-h|-\?|--help)$ ]] && {
+        is_help=true
+        continue
+      }
 
-  [[ -z "${overrides[out-prefix]+x}" && ${#overrides[@]} -gt 0 ]] \
-    && log_fail_rc 1 "
-      PREFIX is required
-     .
-      Issue \`${0} -h\` for help
-    "
+      [[ "${key}" =~ ^(${sections_rex})$ ]] && {
+        sections+=("${key}")
+        continue
+      }
 
-  [[ -n "${overrides[out-prefix]+x}" ]] && unset CONF[is-tpl]
-  # merge hosts with the ones from CONF
-  [[ -n "${CONF[hosts]}" && "${overrides[hosts]}" ]] \
-    && overrides[hosts]="${CONF[hosts]}"$'\n'"${overrides[hosts]}"
+      ERRBAG+=("${key}")
+    done
 
-  local k
-  for k in "${!overrides[@]}"; do
-    CONF[$k]="${overrides[$k]}"
-  done
-}; _opts_main "${@}"
+    OPTS_HELP+=("${is_help}")
+    [[ ${#sections[@]} -gt 0 ]] \
+      && OPTS_HELP+=("${sections[@]}") \
+      || OPTS_HELP+=(help)
+
+    # if help detected return 0 to reset input args
+    ${is_help} && return 0
+
+    ERRBAG=()
+    return 1
+  }; _opts_help "${@}" && set --
+} || {
+  # OPTS_CONFGEN=(IS_CONFGEN FORCE DEST...)
+  declare -a OPTS_CONFGEN
+  _opts_confgen() {
+    unset _opts_confgen
+
+    local endopts=false
+    local is_confgen=false
+    local force=false
+    local -a dests
+
+    local key
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && key='*' || key="${1}"
+
+      case "${key}" in
+        --          ) endopts=true ;;
+        --confgen   ) is_confgen=true ;;
+        --genconf   ) is_confgen=true ;;
+        -f|--force  ) force=true ;;
+        -*          ) ERRBAG+=("${1}") ;;
+        *           ) dests+=("${1}") ;;
+      esac
+
+      shift
+    done
+
+    OPTS_CONFGEN+=("${is_confgen}" "${force}")
+    [[ ${#dests} -gt 0 ]] && OPTS_CONFGEN+=("${dests[@]}")
+
+    # if confgen detected return 0 to reset input args
+    ${is_confgen} && return 0
+
+    ERRBAG=()
+    return 1
+  }; _opts_confgen "${@}" && set --
+} || {
+  # extend CONF with inline only options,
+  # commented ones are placeholders
+  CONF+=(
+    # [passfile]=
+    # [ca_passfile]=
+    [force]=false
+  )
+  _opts_main() {
+    unset _opts_main
+
+    declare -A overrides
+    local overkeys_rex="$(print_msg "
+      issuer-key
+      issuer-cert
+      days
+      cn
+    " | tr '\n' '|' | sed 's/|$//')"
+    declare key
+    declare endopts=false
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && key='*' || key="${1}"
+
+      [[ "${key}" =~ ^--(${overkeys_rex})$ ]] && {
+        # override keys from CONF
+        overrides["${1:2}"]="${2}"
+        shift; shift; continue
+      }
+
+      case "${key}" in
+        --passfile    ) shift; [[ -n "${1+x}" ]] && CONF[passfile]="${1}" ;;
+        --ca-passfile ) shift; [[ -n "${1+x}" ]] && CONF[ca_passfile]="${1}" ;;
+        -f|--force    ) CONF[force]=true ;;
+        # override keys from CONF
+        --encrypt     ) overrides[encrypt]=true ;;
+        --merge       ) overrides[merge]=true ;;
+        --host        ) shift; overrides[hosts]+="${overrides[hosts]+$'\n'}${1}" ;;
+        --            ) endopts=true ;;
+        -*            ) ERRBAG+=("${1}") ;;
+        *             ) overrides[out-prefix]="${1}" ;;
+      esac
+
+      shift
+    done
+
+    [[ -z "${overrides[out-prefix]+x}" && ${#overrides[@]} -gt 0 ]] \
+      && log_fail_rc 1 "
+        PREFIX is required
+      .
+        Issue \`${0} -h\` for help
+      "
+
+    # merge hosts with the ones from CONF
+    [[ -n "${CONF[hosts]}" && "${overrides[hosts]}" ]] \
+      && overrides[hosts]="${CONF[hosts]}"$'\n'"${overrides[hosts]}"
+
+    local k
+    for k in "${!overrides[@]}"; do
+      CONF[$k]="${overrides[$k]}"
+    done
+  }; _opts_main "${@}"
+}
 
 [[ ${#ERRBAG} -gt 0 ]] \
-  &&
-  log_fail_rc 1 "
+  && log_fail_rc 1 "
     Unsupported or conflicting arguments:
     $(printf -- '* %s\n' "${ERRBAG[@]}" | sort -n | uniq)
    .
@@ -209,27 +304,29 @@ help_description() {
 }
 
 help_usage() {
+  local tool="$(basename -- "${0}")"
+
   print_msg "
     USAGE
     =====
     \`\`\`sh
     # View help or help sections.
     # Available sections: description, usage, opts, env, demo
-   .${0} -h [SECTION...]
+   .${tool} -h [SECTION...]
    .
     # Generate configuration to DEST files or to stdout if
     # no DEST specified
-   .${0} --confgen [-f] [--] [DEST...]
+   .${tool} --confgen [-f] [--] [DEST...]
    .
     # Generate certificates based on configuration in
-    # ${0}
-   .${0} [-f] [--passfile PASSFILE] \\
+    # ${tool}
+   .${tool} [-f] [--passfile PASSFILE] \\
    .  [--ca-passfile CA_PASSFILE]
    .
     # Generate certificates based on configuration in
-    # ${0} to PREFIX with inline overrides,
+    # ${tool} to PREFIX with inline overrides,
     # see EXTENDED OPTIONS under OPTIONS help menu
-   .${0} [-f] [--passfile PASSFILE] \\
+   .${tool} [-f] [--passfile PASSFILE] \\
    .  [--ca-passfile CA_PASSFILE] [--encrypt] \\
    .  [--days DAYS] [--cn CN] \\
    .  [--issuer-cert ISSUER_CERT] \\
@@ -241,7 +338,10 @@ help_usage() {
 
 help_opts() {
   print_msg "
-    OPTIONS
+    BASIC options are used in conjunction with conffile,
+    while EXTENDED are meant to override conffile values
+   .
+    BASIC
     =======
     --confgen       Generate configuration file.
    .                Basically the script just copies
@@ -255,13 +355,15 @@ help_opts() {
     --ca-passfile   CA key password file. See
    .                MYSSL_CA_KEYPASS env variable for
    .                replacement
-    ===== EXTENDED OPTIONS =====
+    -h, -?, --help  Print help
+    EXTENDED
+    ========
     --encrypt       Encrypt key. In this case you either
    .                will be prompted for pass or provide
    .                PASSFILE
     --days          Number of days cert is valid for.
-   .                Defaults to '${CONF[days]}'
-    --cn            Common name. Defaults to '${CONF[cn]}'
+   .                Defaults to '${DEF[days]}'
+    --cn            Common name. Defaults to '${DEF[cn]}'
     --issuer-cert   CA issuer cert file. I.e. if this
    .                option is used the certificate won't
    .                be self-signed
@@ -272,7 +374,6 @@ help_opts() {
    .                variable for replacement
     --host          Domain or IP for SAN
     --merge         Merge key into cert file
-    -h, -?, --help  Print help
     \`\`\`
   "
 }
@@ -292,25 +393,48 @@ help_env() {
 }
 
 help_demo() {
+  local tool="$(basename -- "${0}")"
   print_msg "
     DEMO
     ====
     \`\`\`sh
     # Generate configuration
-    $(basename -- "$(realpath "${BASH_SOURCE[0]}")") ./my-cert-conf.sh
+    ${tool} --confgen ./my-cert-conf.sh
    .
     # Edit the CONF section
     vim ./my-cert-conf.sh
    .
-    # Run the configuration
+    # Run the configuration to generate CA
    ../my-cert-conf.sh
-
+   .
     # Assuming you're generating a cert signed by CA
     # with encrypted key
     MYSSL_CA_KEY=\"\$(cat ./ca.key)\" \\
    .  MYSSL_CA_KEYPASS=qwerty \\
    .  ./my-cert-conf.sh
     \`\`\`
+  "
+}
+
+help_import() {
+  print_msg "
+    IMPORT
+    ======
+    Certificate import options:
+    * Google Chrome
+   .  chrome://settings/certificates -> Authorities tab -> Import
+    * Firefox
+   .  about:preferences#privacy -> Certificates section
+   .  -> Certificates section -> View Certificates ...
+    * Android
+   .  Settings -> Security & Lock Screen
+   .  -> Encryption & Credentials -> Install a certificate
+    * Debian / Ubuntu
+   .  \`\`\`sh
+   .  sudo cp '\${CERTFILE}' /usr/local/share/ca-certificates
+   .  sudo update-ca-certificates
+   .  \`\`\`
+   .
   "
 }
 
@@ -324,6 +448,8 @@ help_help() {
   help_env
   echo
   help_demo
+  echo
+  help_import
 }
 
 _help() {
@@ -353,16 +479,24 @@ _confgen() {
   local force="${1}"
   shift
   local -a dests=("${@}")
+  local shebang='#!/usr/bin/env bash'
   local tpl_txt
+  local tpl_confblock
+  local tpl_body
   local dest_dir
 
-  tpl_txt="$(cat -- "${0}" | grep -Ev '^\s*\[is-tpl\]=')"
+  tpl_txt="$(cat -- "${0}")"
+  tpl_body="$(get_body "${tpl_txt}")"
+  tpl_confblock="$(get_conftpl "${tpl_body}")"
 
   [[ ${#dests} -gt 0 ]] || {
-    printf -- '%s\n' "${tpl_txt}"
+    printf -- '%s\n\n%s\n\n%s\n' \
+      "${shebang}" "${tpl_confblock}" "${tpl_body}"
     exit 0
   }
 
+  local dest_txt
+  local confblock
   for dest in "${dests[@]}"; do
     grep -qEx '\s*' <<< "${dest}" && {
       ERRBAG+=("Conf file can't be with empty name")
@@ -379,7 +513,12 @@ _confgen() {
       continue
     }
 
-    printf -- '%s\n' "${tpl_txt}" \
+    dest_txt="$(cat -- "${dest}" 2>/dev/null)"
+    confblock="$(get_confblock "${dest_txt}")"
+    confblock="${confblock:-${tpl_confblock}}"
+
+    printf -- '%s\n\n%s\n\n%s\n' \
+      "${shebang}" "${confblock}" "${tpl_body}" \
     | tee "${dest}" >/dev/null 2>&1 || {
       ERRBAG+=("Can't write to conf file: ${dest}")
       continue
@@ -403,18 +542,25 @@ _confgen() {
   exit 0
 }; _confgen "${OPTS_CONFGEN[@]}" || exit $?
 
-if [[ -n "${CONF[is-tpl]}" ]]; then
-  log_fail_rc 1 "
-    Can't generate certificates, you must \`--confgen\` first
-    or remove \`is-tpl\` entry line from CONF section
+[[ -n "${CONF[out-prefix]}" ]] \
+  || log_fail_rc 1 "
+    Can't generate certificates.
+    1. If you're using this script installed system wide:
+    * Option 1: Use PREFIX argument of the command.
+    * Option 2: generate a configuration, configure and
+   .  execute it.
+    2. If you're using a generated configuration, just
+   .  make sure CONF['out-prefix'] is configured.
+    3. If you downloaded this script want to use it stand
+   .  alone either use point 1 or generate the
+   .  configuration to the script itself:
+   .  \`\`\`sh
+   .  ${0} --confgen -f -- ${0}
+   .  \`\`\`
+   .  Then configure the resulting file and execute.
    .
     Issue \`${0} -h\` for help
   "
-fi
-
-CONF[out-prefix]="$(fix_path "${CONF[out-prefix]}")"
-CONF[issuer-cert]="$(fix_path "${CONF[issuer-cert]}")"
-CONF[issuer-key]="$(fix_path "${CONF[issuer-key]}")"
 
 filename="$(basename -- "${CONF[out-prefix]}")"
 
@@ -629,7 +775,11 @@ else
   }
 fi
 
-[[ (-f "${TMPCERTFILE}" && -f "${TMPKEYFILE}") ]] && {
+_final() {
+  unset _final
+
+  [[ (-f "${TMPCERTFILE}" && -f "${TMPKEYFILE}") ]] || return 1
+
   mkdir -p -- "${OUTDIR}"
   log_fail_rc $? "Couldn't create destination directory: ${OUTDIR}"
 
@@ -652,11 +802,9 @@ fi
     Generated to $(realpath -- "${OUTDIR}")
     DONE
   "
-
-  exit 0
+}; _final || {
+  log_err "Something went wrong" && exit 1
 }
-
-log_err "Something went wrong" && exit 1
 
 ## generate CA key and cert
 # openssl genrsa -out ./certs/ca.key 4096
