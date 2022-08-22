@@ -24,7 +24,7 @@
 #   # Domains and IPs for SAN. One per line, empty lines are
 #   # ignored. Leave blank for CA certificate generation
 #   [hosts]="{{ hosts }}"
-#   # Merge key into cert file
+#   # Merge key and cert into a single *.pem file
 #   [merge]={{ merge }}
 # )
 #
@@ -373,7 +373,7 @@ help_opts() {
    .                will be used. See MYSSL_CA_KEY env
    .                variable for replacement
     --host          Domain or IP for SAN
-    --merge         Merge key into cert file
+    --merge         Merge key and cert into a *.pem file
     \`\`\`
   "
 }
@@ -786,8 +786,10 @@ _final() {
   if ${MERGE}; then
     log_msg "Merging key into cert ..."
     cat -- "${TMPKEYFILE}" >> "${TMPCERTFILE}"
-    chmod 0600 -- "${TMPCERTFILE}"
     log_fail_rc $? "Couldn't merge to ${TMPCERTFILE}"
+    chmod 0600 -- "${TMPCERTFILE}"
+    log_fail_rc $? "Couldn't chmod 0600 ${TMPCERTFILE}"
+    CERTFILE="${CERTFILE%.*}.pem"
   else
     chmod 0600 -- "${TMPKEYFILE}"
     mv -- "${TMPKEYFILE}" "${KEYFILE}"
