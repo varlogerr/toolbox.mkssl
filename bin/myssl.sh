@@ -26,6 +26,21 @@
 #   [hosts]="{{ hosts }}"
 #   # Merge key and cert into a single *.pem file
 #   [merge]={{ merge }}
+#   #
+#   # EXTRA DISTINGUISHED NAME
+#   #
+#   # ISO 3166-1 country code. Example: US
+#   [country]="{{ country }}"
+#   # State or Province name. Example: New York
+#   [state]="{{ state }}"
+#   # Locality name. Example: New York
+#   [locality]="{{ locality }}"
+#   # Organization name. Example: Second hand vacuum clener corp
+#   [org]="{{ org }}"
+#   # Organization unit name. Example: marketing
+#   [org-unit]="{{ org-unit }}"
+#   # Spam destination
+#   [email]="{{ email }}"
 # )
 #
 # ## If you generated this configuration with a system wide
@@ -65,6 +80,7 @@
 #
 # [dn]
 # CN = {{ cn }}
+# # DN_EXTRA_PH
 #
 # [alt-names]
 # {/TPL_OPENSSL_CONF}
@@ -92,6 +108,13 @@ declare -A DEF=(
   [issuer-key]=""
   [hosts]=""
   [merge]=false
+  # extremely useless distinguished name props
+  [country]=""
+  [state]=""
+  [locality]=""
+  [org]=""
+  [org-unit]=""
+  [email]=""
 )
 
 # Ensure defaults
@@ -351,6 +374,12 @@ declare -a ERRBAG=()
       issuer-cert
       days
       cn
+      country
+      state
+      locality
+      org
+      org-unit
+      email
     " | tr '\n' '|' | sed 's/|$//')"
     declare key
     declare endopts=false
@@ -447,7 +476,8 @@ help_usage() {
 help_opts() {
   print_msg "
     BASIC options are used in conjunction with conffile,
-    while EXTENDED are meant to override conffile values
+    while EXTENDED and DN EXTRAS are meant to override
+    conffile values
    .
     BASIC
     =======
@@ -482,7 +512,14 @@ help_opts() {
    .                variable for replacement
     --host          Domain or IP for SAN
     --merge         Merge key and cert into a *.pem file
-    \`\`\`
+    DN EXTRAS
+    =========
+    --country     ISO 3166-1 country code
+    --state       State or Province name
+    --locality    Locality name
+    --org         Organization name
+    --org-unit    Organization unit name
+    --email       Email
   "
 }
 
@@ -734,6 +771,22 @@ declare TMPCONFFILE_REQ="${TMPDIR}/req.cfg"
 _mk_openssl_conffile() {
   unset _mk_openssl_conffile
 
+  local -A dn_map=(
+    [country]=C
+    [state]=ST
+    [locality]=L
+    [org]=O
+    [org-unit]=OU
+    [email]=emailAddress
+  )
+
+  local -a dn_arr
+
+  local i
+  for i in "${!dn_map[@]}"; do
+    [[ -n "${CONF[$i]}" ]] && dn_arr+=("${dn_map[$i]} = ${CONF[$i]}")
+  done
+
   local conffile_txt
   conffile_txt="$(
     cat <<< "${SELF_TXT}" \
@@ -741,6 +794,16 @@ _mk_openssl_conffile() {
     | tpl_compile --is-ca "${IS_CA^^}" --cn "${CONF[cn]}" \
     | cat
   )"
+
+  local lineno
+  lineno="$(grep -m 1 -nFx '# DN_EXTRA_PH' <<< "${conffile_txt}")"
+  [[ $? -lt 1 ]] && {
+    conffile_txt="$(
+      head -n $((${lineno%%:*} -1)) <<< "${conffile_txt}"
+      [[ ${#dn_arr[@]} -gt 0 ]] && printf -- '%s\n' "${dn_arr[@]}"
+      tail -n +$((${lineno%%:*} +1)) <<< "${conffile_txt}"
+    )"
+  }
 
   ${IS_CA} && {
     # CA certificate still needs an entry under SAN section
