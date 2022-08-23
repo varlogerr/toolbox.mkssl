@@ -684,19 +684,18 @@ filename="$(basename -- "${CONF[out-prefix]}")"
 TMPDIR="$(/bin/mktemp -d --suffix '-mkssl')" || {
   log_fail_rc 1 "Error creating temp directory"
 }
+
 [[ "${CONF[encrypt]}" =~ ^(true|false)$ ]] || {
   log_fail_rc 1 "Invalid ENCRYPT value: ${CONF[encrypt]}"
 }
 [[ "${CONF[merge]}" =~ ^(true|false)$ ]] || {
   log_fail_rc 1 "Invalid MERGE value: ${CONF[merge]}" && exit 1
 }
+
+CONF[hosts]="$(print_msg "${CONF[hosts]}")"
+CONF[issuer-key]="${CONF[issuer-key]:-${CONF[issuer-cert]}}"
+
 OUTDIR="$(dirname -- "${CONF[out-prefix]}")"
-ENCRYPT="${CONF[encrypt]}"
-DAYS="${CONF[days]}"
-HOSTS="$(print_msg "${CONF[hosts]}")"
-MERGE="${CONF[merge]}"
-ISSUER_CERT="${CONF[issuer-cert]}"
-ISSUER_KEY="${CONF[issuer-key]:-${ISSUER_CERT}}"
 TMPKEYFILE="${TMPDIR}/${filename}.key"
 TMPCERTFILE="${TMPDIR}/${filename}.crt"
 TMPREQFILE="${TMPDIR}/${filename}.csr"
@@ -705,7 +704,7 @@ KEYFILE="${OUTDIR}/${filename}.key"
 CERTFILE="${OUTDIR}/${filename}.crt"
 REQFILE="${OUTDIR}/${filename}.csr"
 
-declare -r IS_CA="$([[ -n "${HOSTS}" ]] && echo false || echo true)"
+declare -r IS_CA="$([[ -n "${CONF[hosts]}" ]] && echo false || echo true)"
 
 for v in KEYFILE CERTFILE REQFILE; do
   ${CONF[force]} && break
@@ -730,10 +729,12 @@ MYSSL_CA_KEYPASS="${MYSSL_CA_KEYPASS-$(
 trap "rm -f '${TMPDIR}'/*" SIGINT
 
 # COMPOSE CONFFILE
-{
-  declare TMPCONFFILE_CRT="${TMPDIR}/crt.cfg"
-  declare TMPCONFFILE_REQ="${TMPDIR}/req.cfg"
+declare TMPCONFFILE_CRT="${TMPDIR}/crt.cfg"
+declare TMPCONFFILE_REQ="${TMPDIR}/req.cfg"
+_mk_openssl_conffile() {
+  unset _mk_openssl_conffile
 
+  local conffile_txt
   conffile_txt="$(
     cat <<< "${SELF_TXT}" \
     | tag_block_get --strip TPL_OPENSSL_CONF \
@@ -750,8 +751,8 @@ trap "rm -f '${TMPDIR}'/*" SIGINT
     declare ips
     declare domains
 
-    domains="$(grep -vxE "${ip_rex}" <<< "${HOSTS}")"
-    ips="$(grep -xE "${ip_rex}" <<< "${HOSTS}")"
+    domains="$(grep -vxE "${ip_rex}" <<< "${CONF[hosts]}")"
+    ips="$(grep -xE "${ip_rex}" <<< "${CONF[hosts]}")"
 
     conffile_txt+="${domains:+$'\n'$(
       cat -n <<< "${domains}" \
@@ -767,33 +768,33 @@ trap "rm -f '${TMPDIR}'/*" SIGINT
   grep -Ev '^authorityKeyIdentifier =' <<< "${conffile_txt}" \
   | tee "${TMPCONFFILE_REQ}" >/dev/null 2>&1 \
     || log_fail_rc $? "Error creating temp req conffile: ${TMPCONFFILE_REQ}"
-}
+}; _mk_openssl_conffile
 
 # CREATE KEY
-{
+_mk_pk() {
+  unset _mk_pk
+
   log_msg "Generating key ..."
 
-  cmd_key=(
+  local -a cmd_key=(
     openssl genpkey -algorithm RSA -outform PEM
     -pkeyopt rsa_keygen_bits:4096 -out "${TMPKEYFILE}"
   )
   ${CONF[encrypt]} && cmd_key+=(-aes256)
 
-  {
-    if [[ -n "${CONF[passfile]+x}" ]]; then
-      "${cmd_key[@]}" -pass file:<(pass="${MYSSL_KEYPASS}" printenv pass)
-    else
-      "${cmd_key[@]}"
-    fi
-    log_fail_rc $? "Couldn't generate key"
-  }
-}
+  if [[ -n "${CONF[passfile]+x}" ]]; then
+    "${cmd_key[@]}" -pass file:<(pass="${MYSSL_KEYPASS}" printenv pass)
+  else
+    "${cmd_key[@]}"
+  fi
+  log_fail_rc $? "Couldn't generate key"
+}; _mk_pk
 
-if [[ -n "${ISSUER_CERT}" ]]; then
+if [[ -n "${CONF[issuer-cert]}" ]]; then
   # CREATE SCR AND SIGNED BY ISSUER CERT
 
   # in case CA key is passed via env var
-  MYSSL_CA_KEY="${MYSSL_CA_KEY-$(cat -- "${ISSUER_KEY}" 2>/dev/null)}"
+  MYSSL_CA_KEY="${MYSSL_CA_KEY-$(cat -- "${CONF[issuer-key]}" 2>/dev/null)}"
 
   cmd_req=(
     openssl req -new -key "${TMPKEYFILE}"
@@ -801,8 +802,8 @@ if [[ -n "${ISSUER_CERT}" ]]; then
   )
   cmd_cert=(
     openssl x509 -req -in "${TMPREQFILE}"
-    -CA "${ISSUER_CERT}" -CAcreateserial
-    -out "${TMPCERTFILE}" -days "${DAYS}"
+    -CA "${CONF[issuer-cert]}" -CAcreateserial
+    -out "${TMPCERTFILE}" -days "${CONF[days]}"
     -extfile "${TMPCONFFILE_CRT}"
   )
   # either server cert or intermediate
@@ -835,7 +836,7 @@ if [[ -n "${ISSUER_CERT}" ]]; then
   {
     log_msg "Creating certificate bundle ..."
     # https://serverfault.com/a/755815
-    issuer_pkcs7="$(openssl crl2pkcs7 -nocrl -certfile "${ISSUER_CERT}")"
+    issuer_pkcs7="$(openssl crl2pkcs7 -nocrl -certfile "${CONF[issuer-cert]}")"
     log_fail_rc $? "Can't parse ISSUER_CERT"
 
     openssl pkcs7 -print_certs <<< "${issuer_pkcs7}" | grep -v \
@@ -845,14 +846,14 @@ if [[ -n "${ISSUER_CERT}" ]]; then
   }
 
   log_msg "Vertifying cert against CA ..."
-  openssl verify -CAfile "${ISSUER_CERT}" "${TMPCERTFILE}"
+  openssl verify -CAfile "${CONF[issuer-cert]}" "${TMPCERTFILE}"
   log_fail_rc $? "Verification failed"
 else
   # CREATE SELF-SIGNED CERT
 
   cmd_cert=(
     openssl req -new -x509 -key "${TMPKEYFILE}"
-    -days "${DAYS}" -out "${TMPCERTFILE}"
+    -days "${CONF[days]}" -out "${TMPCERTFILE}"
     -config "${TMPCONFFILE_CRT}"
   )
   ${IS_CA} || cmd_cert+=(-extensions 'req-ext')
@@ -876,7 +877,7 @@ _final() {
   mkdir -p -- "${OUTDIR}"
   log_fail_rc $? "Couldn't create destination directory: ${OUTDIR}"
 
-  if ${MERGE}; then
+  if ${CONF[merge]}; then
     log_msg "Merging key into cert ..."
     cat -- "${TMPKEYFILE}" >> "${TMPCERTFILE}"
     log_fail_rc $? "Couldn't merge to ${TMPCERTFILE}"
@@ -897,9 +898,7 @@ _final() {
     Generated to $(realpath -- "${OUTDIR}")
     DONE
   "
-}; _final || {
-  log_err "Something went wrong" && exit 1
-}
+}; _final || log_fail_rc 1 "Something went wrong"
 
 ## generate CA key and cert
 # openssl genrsa -out ./certs/ca.key 4096
