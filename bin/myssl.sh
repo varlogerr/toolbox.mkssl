@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# {CONF_TPL}
+# {TPL_MYSSL_CONF}
 # # {CONFBLOCK}
 # # Configuration block. Ignored by force confgen
 #
-# BASE_DIR="{{ BASE_DIR }}"
-# CERTS_DIR="{{ CERTS_DIR }}"
-# CA_DIR="{{ CA_DIR }}"
+# BASE_DIR="{{ base-dir }}"
+# CERTS_DIR="{{ certs-dir }}"
+# CA_DIR="{{ ca-dir }}"
 #
 # declare -A CONF=(
 #   # Output file prefix (without extension)
@@ -33,17 +33,56 @@
 # ## instead of stand alone code under CONFBLOCK.
 # ## In this case uncomment sourcing line below and remove
 # ## everything after CONFBLOCK.
-# # . "{{ SOURCE_SCRIPT }}"
+# # . "{{ self-path }}"
 #
 # # {/CONFBLOCK}
-# {/CONF_TPL}
+# {/TPL_MYSSL_CONF}
+
+# {TPL_OPENSSL_CONF}
+# # https://support.dnsimple.com/categories/ssl-certificates/
+# # https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
+# # https://www.ibm.com/docs/en/ztpf/1.1.0.15?topic=gssccr-configuration-file-generating-self-signed-certificates-certificate-requests
+# # https://two-oes.medium.com/working-with-openssl-and-dns-alternative-names-367f06a23841
+# [req]
+# default_bits = 4096
+# prompt = no
+# default_md = sha256
+# distinguished_name = dn
+# x509_extensions = ca-ext
+# req_extensions = req-ext
+#
+# [ca-ext]
+# subjectKeyIdentifier = hash
+# authorityKeyIdentifier = keyid, issuer
+# basicConstraints = CA:{{ is-ca }}
+#
+# [req-ext]
+# authorityKeyIdentifier = keyid, issuer
+# basicConstraints = CA:{{ is-ca }}
+# keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+# extendedKeyUsage = serverAuth, clientAuth
+# subjectAltName = @alt-names
+#
+# [dn]
+# CN = {{ cn }}
+#
+# [alt-names]
+# {/TPL_OPENSSL_CONF}
+
+declare SELF_PATH
+declare SELF_TXT
+SELF_PATH="$(realpath "${BASH_SOURCE[0]}")"
+SELF_TXT="$(cat -- "${SELF_PATH}")" || {
+  echo "${SELF_PATH} is unreadable"
+  exit 1
+}
 
 declare -A DEF=(
-  # conf template only defaults
-  [SOURCE_SCRIPT]="$(realpath -- "${0}")"
-  [BASE_DIR]='$(dirname -- "${0}")'
-  [CERTS_DIR]='${BASE_DIR}/certs'
-  [CA_DIR]='${BASE_DIR}/ca'
+  # myssl conf only defaults
+  [self-path]="$(realpath -- "${0}")"
+  [base-dir]='$(dirname -- "${0}")'
+  [certs-dir]='${BASE_DIR}/certs'
+  [ca-dir]='${BASE_DIR}/ca'
   [out-prefix]='${CERTS_DIR}/$(basename -s .sh -- "${0}")'
   # common defaults
   [encrypt]=false
@@ -71,80 +110,148 @@ CONF+=(
 
 declare -a ERRBAG=()
 
-print_msg() {
-  local res
-  res="$(printf -- '%s\n' "${@}" \
-    | sed -e 's/^\s*//' -e 's/\s*$//' \
-    | grep -vFx '' | sed 's/^\.//')"
-  [[ -n "${res}" ]] || return 1
-  printf -- '%s\n' "${res}"
-  return 0
-}
-print_err() { print_msg "${@}" >&2; }
+# logging functions
+{
+  print_msg() {
+    local res
+    res="$(printf -- '%s\n' "${@}" \
+      | sed -e 's/^\s*//' -e 's/\s*$//' \
+      | grep -vFx '' | sed 's/^\.//')"
+    [[ -n "${res}" ]] || return 1
+    printf -- '%s\n' "${res}"
+    return 0
+  }
+  print_err() { print_msg "${@}" >&2; }
 
-log_msg() {
-  print_msg "${@}" | sed 's/^/[myssl] /'
-}
-log_err() { log_msg "${@}" >&2; }
+  log_msg() {
+    print_msg "${@}" | sed 's/^/[myssl] /'
+  }
+  log_err() { log_msg "${@}" >&2; }
 
-log_fail_rc() {
-  local rc=${1}
-  shift
-  local msg="${@}"
+  log_fail_rc() {
+    local rc=${1}
+    shift
+    local msg="${@}"
 
-  [[ "${rc}" -lt 1 ]] && return ${rc}
+    [[ "${rc}" -lt 1 ]] && return ${rc}
 
-  log_err "${msg[@]}"
-  exit "${rc}"
-}
-
-# https://gist.github.com/varlogerr/2c058af053921f1e9a0ddc39ab854577#file-sed-quote
-sed_quote_keyword() {
-  local keyword="${1-$(cat -)}"
-  sed -e 's/[]\/$*.^[]/\\&/g' <<< "${keyword}"
-}
-sed_quote_replace() {
-  local keyword="${1-$(cat -)}"
-  sed -e 's/[\/&]/\\&/g' <<< "${keyword}"
+    log_err "${msg[@]}"
+    exit "${rc}"
+  }
 }
 
-_get_block() {
-  local tag_word="${1}"
-  local txt="${2}"
-  local tag_start="# {$tag_word}"
-  local tag_end="# {/$tag_word}"
-
-  grep -A 999999 -Fx -- "${tag_start}" <<< "${txt}" \
-  | grep -B 999999 -Fx -- "${tag_end}"
+# misc functions
+{
+  # https://gist.github.com/varlogerr/2c058af053921f1e9a0ddc39ab854577#file-sed-quote
+  sed_quote_key() {
+    local key="${1-$(cat)}"
+    sed -e 's/[]\/$*.^[]/\\&/g' <<< "${key}"
+  }
+  sed_quote_replace() {
+    local replace="${1-$(cat)}"
+    sed -e 's/[\/&]/\\&/g' <<< "${replace}"
+  }
 }
 
-get_confblock() {
-  local txt="${1}"
+# tag and template functions
+{
+  # Get '# {TAG}' to '# {/TAG}' (inclusive) block from FILE
+  # Usage:
+  #   tpl_block_read [OPTIONS] [--] TAG FILE...
+  #   tpl_block_read [OPTIONS] [--] TAG <<< TEXT
+  # Options:
+  #   --unhash  - uncomment non-TAG lines
+  #   --untag   - remove TAG lines
+  #   --strip   - same as `--unhash --untag`
+  tag_block_get() {
+    local -a pos
+    local unhash=false
+    local untag=false
+    # initially passthrough filter
+    local -a filter=(sed -E -e 's/^/&/')
 
-  _get_block CONFBLOCK "${1}"
-}
+    local endopts=false
+    local key
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && key='*' || key="${1}"
+      case "${key}" in
+        --unhash) unhash=true ;;
+        --untag ) untag=true ;;
+        --strip ) unhash=true; untag=true ;;
+        --  ) endopts=true ;;
+        *   ) pos+=("${1}") ;;
+      esac
+      shift
+    done
 
-get_conftpl() {
-  local txt="${1}"
-  local -a sed_opts
+    local tag="${pos[0]}"
+    ${unhash} && filter+=(
+      -e '1s/^# \{'"$tag"'\}$/#&/'
+      -e '$s/^# \{\/'"$tag"'\}$/#&/'
+      -e 's/^# ?//'
+    )
+    ${untag} && filter+=(
+      -e '1d' -e '$d'
+    )
 
-  local key
-  local replace
-  for key in "${!DEF[@]}"; do
-    key="$(sed_quote_keyword "${key}")"
-    replace="$(sed_quote_replace "${DEF[$key]}")"
-    sed_opts+=(-e "s/{{\s*${key}\s*}}/${replace}/g")
-  done
+    cat -- "${pos[@]:1}" \
+    | grep -A 999999 -Fx -- "# {$tag}" \
+    | grep -B 999999 -Fx -- "# {/$tag}" \
+    | "${filter[@]}" \
+    | cat
+  }
 
-  _get_block CONF_TPL "${1}" | sed -E 's/#\s?//' \
-  | tail -n +2 | head -n -1 | sed "${sed_opts[@]}"
-}
+  # Compile template FILE replacing '{{ KEY }}' with value.
+  # In case of duplicated --KEY option last wins.
+  # Usage:
+  #   tpl_compile [--KEY VALUE...] FILE...
+  #   tpl_compile [--KEY VALUE...] <<< TEXT
+  # Demo:
+  #   tpl_compile --user varlog --pass changeme \
+  #     <<< "login={{ user }}, password={{ pass }}"
+  #   # output: "account=varlog, password=changeme"
+  tpl_compile() {
+    local -a pos
+    local -A kv
+    # initially passthrough filter
+    local -a filter=(sed -e 's/^/&/')
 
-get_body() {
-  local txt="${1}"
-  local ignore_tag='# {CONF_TPL}'
+    local endopts=false
+    local key
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && key='*' || key="${1}"
+      case "${key}" in
+        --  ) endopts=true ;;
+        --* ) shift; kv[${key:2}]="${1}" ;;
+        *   ) pos+=("${1}") ;;
+      esac
+      shift
+    done
 
-  grep -A 999999 -Fx -- "${ignore_tag}" <<< "${txt}"
+    local tpl="$(cat -- "${pos[@]}")"
+
+    local k
+    local v
+    for k in "${!kv[@]}"; do
+      v="$(sed_quote_replace "${kv[$k]}")"
+      kv[$k]="${v}"
+    done
+    for k in "${!kv[@]}"; do
+      k="$(sed_quote_key "${k}")"
+      filter+=(-e "s/{{\s*${k}\s*}}/${kv[$k]}/g")
+    done
+
+    "${filter[@]}" <<< "${tpl}"
+  }
+
+  get_body() {
+    local txt="${1}"
+    local ignore_tag='# {TPL_MYSSL_CONF}'
+
+    grep -A 999999 -Fx -- "${ignore_tag}" <<< "${txt}"
+  }
 }
 
 {
@@ -311,7 +418,8 @@ help_usage() {
     =====
     \`\`\`sh
     # View help or help sections.
-    # Available sections: description, usage, opts, env, demo
+    # Available sections:
+    # description, usage, opts, env, demo, import
    .${tool} -h [SECTION...]
    .
     # Generate configuration to DEST files or to stdout if
@@ -480,22 +588,29 @@ _confgen() {
   shift
   local -a dests=("${@}")
   local shebang='#!/usr/bin/env bash'
-  local tpl_txt
-  local tpl_confblock
-  local tpl_body
-  local dest_dir
+  local self_confblock
+  local self_body
+  local -a tpl_opts
 
-  tpl_txt="$(cat -- "${0}")"
-  tpl_body="$(get_body "${tpl_txt}")"
-  tpl_confblock="$(get_conftpl "${tpl_body}")"
+  local k; for k in "${!DEF[@]}"; do
+    tpl_opts+=("--${k}" "${DEF[$k]}")
+  done
+
+  self_body="$(get_body "${SELF_TXT}")"
+  self_confblock="$(
+    cat <<< "${self_body}" \
+    | tag_block_get --strip TPL_MYSSL_CONF \
+    | tpl_compile "${tpl_opts[@]}" \
+    | cat
+  )"
 
   [[ ${#dests} -gt 0 ]] || {
     printf -- '%s\n\n%s\n\n%s\n' \
-      "${shebang}" "${tpl_confblock}" "${tpl_body}"
+      "${shebang}" "${self_confblock}" "${self_body}"
     exit 0
   }
 
-  local dest_txt
+  local dest_dir
   local confblock
   for dest in "${dests[@]}"; do
     grep -qEx '\s*' <<< "${dest}" && {
@@ -513,12 +628,14 @@ _confgen() {
       continue
     }
 
-    dest_txt="$(cat -- "${dest}" 2>/dev/null)"
-    confblock="$(get_confblock "${dest_txt}")"
-    confblock="${confblock:-${tpl_confblock}}"
+    confblock="$(
+      cat -- "${dest}" 2>/dev/null \
+      | tag_block_get CONFBLOCK
+    )"
+    confblock="${confblock:-${self_confblock}}"
 
     printf -- '%s\n\n%s\n\n%s\n' \
-      "${shebang}" "${confblock}" "${tpl_body}" \
+      "${shebang}" "${confblock}" "${self_body}" \
     | tee "${dest}" >/dev/null 2>&1 || {
       ERRBAG+=("Can't write to conf file: ${dest}")
       continue
@@ -617,36 +734,12 @@ trap "rm -f '${TMPDIR}'/*" SIGINT
   declare TMPCONFFILE_CRT="${TMPDIR}/crt.cfg"
   declare TMPCONFFILE_REQ="${TMPDIR}/req.cfg"
 
-  conffile_txt="$(print_msg "
-    # https://support.dnsimple.com/categories/ssl-certificates/
-    # https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
-    # https://www.ibm.com/docs/en/ztpf/1.1.0.15?topic=gssccr-configuration-file-generating-self-signed-certificates-certificate-requests
-    # https://two-oes.medium.com/working-with-openssl-and-dns-alternative-names-367f06a23841
-    [req]
-    default_bits = 4096
-    prompt = no
-    default_md = sha256
-    distinguished_name = dn
-    x509_extensions = ca-ext
-    req_extensions = req-ext
-
-    [ca-ext]
-    subjectKeyIdentifier = hash
-    authorityKeyIdentifier = keyid, issuer
-    basicConstraints = CA:${IS_CA^^}
-
-    [req-ext]
-    authorityKeyIdentifier = keyid, issuer
-    basicConstraints = CA:${IS_CA^^}
-    keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
-    extendedKeyUsage = serverAuth, clientAuth
-    subjectAltName = @alt-names
-
-    [dn]
-    CN = ${CONF[cn]}
-
-    [alt-names]
-  ")"
+  conffile_txt="$(
+    cat <<< "${SELF_TXT}" \
+    | tag_block_get --strip TPL_OPENSSL_CONF \
+    | tpl_compile --is-ca "${IS_CA^^}" --cn "${CONF[cn]}" \
+    | cat
+  )"
 
   ${IS_CA} && {
     # CA certificate still needs an entry under SAN section
