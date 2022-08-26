@@ -85,6 +85,137 @@
 # [alt-names]
 # {/TPL_OPENSSL_CONF}
 
+# {TPL_HELP_USAGE}
+# USAGE
+# =====
+# ```sh
+# # View help or help sections.
+# # Available sections:
+# # description, usage, opts, env, demo, import
+# {{ tool }} -h [SECTION...]
+#
+# # Generate configuration to DEST files or to stdout if
+# # no DEST specified
+# {{ tool }} --confgen [-f] [--] [DEST...]
+#
+# # Generate certificates based on configuration in
+# # {{ tool }}
+# {{ tool }} [-f] [--passfile PASSFILE] \
+#   [--ca-passfile CA_PASSFILE]
+#
+# # Generate certificates based on configuration in
+# # {{ tool }} to PREFIX with inline overrides,
+# # see EXTENDED OPTIONS under OPTIONS help menu
+# {{ tool }} [-f] [--passfile PASSFILE] \
+#   [--ca-passfile CA_PASSFILE] [--encrypt] \
+#   [--days DAYS] [--cn CN] \
+#   [--issuer-cert ISSUER_CERT] \
+#   [--issuer-key ISSUER_KEY] \
+#   [--host HOST...] [--merge] PREFIX
+# ```
+# {/TPL_HELP_USAGE}
+#
+# {TPL_HELP_OPTS}
+# OPTIONS
+# =======
+# BASIC options are used in conjunction with conffile,
+# while EXTENDED and DN EXTRAS are meant to override
+# conffile values
+#   BASIC
+# =======
+# --confgen       Generate configuration file.
+#                 Basically the script just copies
+#                 itself with minor modification
+# -f, --force     Force override files if exist
+# --passfile      Key password file. Only takes effect
+#                 when certificate key file is
+#                 configured to be encrypted. See
+#                 MYSSL_KEYPASS env variable for
+#                 replacement
+# --ca-passfile   CA key password file. See
+#                 MYSSL_CA_KEYPASS env variable for
+#                 replacement
+# -h, -?, --help  Print help
+#   EXTENDED
+# ==========
+# --encrypt       Encrypt key. In this case you either
+#                 will be prompted for pass or provide
+#                 PASSFILE
+# --days          Number of days cert is valid for.
+#                 Defaults to '{{ days }}'
+# --cn            Common name. Defaults to '{{ cn }}'
+# --issuer-cert   CA issuer cert file. I.e. if this
+#                 option is used the certificate won't
+#                 be self-signed
+# --issuer-key    CA issuer key file. Ignored without
+#                 ISSUER_CERT. When ISSUER_CERT is set
+#                 but ISSUER_KEY is not ISSUER_CERT
+#                 will be used. See MYSSL_CA_KEY env
+#                 variable for replacement
+# --host          Domain or IP for SAN
+# --merge         Merge key and cert into a *.pem file
+#   DN EXTRAS
+# ===========
+# --country     ISO 3166-1 country code
+# --state       State or Province name
+# --locality    Locality name
+# --org         Organization name
+# --org-unit    Organization unit name
+# --email       Email
+# {/TPL_HELP_OPTS}
+#
+# {TPL_HELP_ENV_VARS}
+# ENV VARS
+# ========
+# Alternative way to pass sencitive data is via env
+# variables. It's convinient when you keep this data
+# in a file in encrypted form. The following
+# environment variables are supported:
+# * MYSSL_CA_KEY      - issuer key text
+# * MYSSL_KEYPASS     - key password
+# * MYSSL_CA_KEYPASS  - issuer key password
+# {/TPL_HELP_ENV_VARS}
+#
+# {TPL_HELP_DEMO}
+# DEMO
+# ====
+# ```sh
+# # Generate configuration
+# {{ tool }} --confgen ./my-cert-conf.sh
+#
+# # Edit the CONF section
+# vim ./my-cert-conf.sh
+#
+# # Run the configuration to generate CA
+# ./my-cert-conf.sh
+#
+# # Assuming you're generating a cert signed by CA
+# # with encrypted key
+# MYSSL_CA_KEY="$(cat ./ca.key)" \
+# MYSSL_CA_KEYPASS=qwerty \
+#   ./my-cert-conf.sh
+# ```
+# {/TPL_HELP_DEMO}
+#
+# {TPL_HELP_IMPORT}
+# IMPORT
+# ======
+# Certificate import options:
+# * Google Chrome
+#   chrome://settings/certificates -> Authorities tab -> Import
+# * Firefox
+#   about:preferences#privacy -> Certificates section
+#   -> Certificates section -> View Certificates ...
+# * Android
+#   Settings -> Security & Lock Screen
+#   -> Encryption & Credentials -> Install a certificate
+# * Debian / Ubuntu
+#   ```sh
+#   sudo cp "${CERTFILE}" /usr/local/share/ca-certificates
+#   sudo update-ca-certificates
+#   ```
+# {/TPL_HELP_IMPORT}
+
 declare SELF_PATH
 declare SELF_TXT
 SELF_PATH="$(realpath "${BASH_SOURCE[0]}")"
@@ -441,146 +572,33 @@ help_description() {
 
 help_usage() {
   local tool="$(basename -- "${0}")"
-
-  print_msg "
-    USAGE
-    =====
-    \`\`\`sh
-    # View help or help sections.
-    # Available sections:
-    # description, usage, opts, env, demo, import
-   .${tool} -h [SECTION...]
-   .
-    # Generate configuration to DEST files or to stdout if
-    # no DEST specified
-   .${tool} --confgen [-f] [--] [DEST...]
-   .
-    # Generate certificates based on configuration in
-    # ${tool}
-   .${tool} [-f] [--passfile PASSFILE] \\
-   .  [--ca-passfile CA_PASSFILE]
-   .
-    # Generate certificates based on configuration in
-    # ${tool} to PREFIX with inline overrides,
-    # see EXTENDED OPTIONS under OPTIONS help menu
-   .${tool} [-f] [--passfile PASSFILE] \\
-   .  [--ca-passfile CA_PASSFILE] [--encrypt] \\
-   .  [--days DAYS] [--cn CN] \\
-   .  [--issuer-cert ISSUER_CERT] \\
-   .  [--issuer-key ISSUER_KEY] \\
-   .  [--host HOST...] [--merge] PREFIX
-    \`\`\`
-  "
+  cat <<< "${SELF_TXT}" \
+    | tag_block_get --strip TPL_HELP_USAGE \
+    | tpl_compile --tool "${tool}"
 }
 
 help_opts() {
-  print_msg "
-    BASIC options are used in conjunction with conffile,
-    while EXTENDED and DN EXTRAS are meant to override
-    conffile values
-   .
-    BASIC
-    =======
-    --confgen       Generate configuration file.
-   .                Basically the script just copies
-   .                itself with minor modification
-    -f, --force     Force override files if exist
-    --passfile      Key password file. Only takes effect
-   .                when certificate key file is
-   .                configured to be encrypted. See
-   .                MYSSL_KEYPASS env variable for
-   .                replacement
-    --ca-passfile   CA key password file. See
-   .                MYSSL_CA_KEYPASS env variable for
-   .                replacement
-    -h, -?, --help  Print help
-    EXTENDED
-    ========
-    --encrypt       Encrypt key. In this case you either
-   .                will be prompted for pass or provide
-   .                PASSFILE
-    --days          Number of days cert is valid for.
-   .                Defaults to '${DEF[days]}'
-    --cn            Common name. Defaults to '${DEF[cn]}'
-    --issuer-cert   CA issuer cert file. I.e. if this
-   .                option is used the certificate won't
-   .                be self-signed
-    --issuer-key    CA issuer key file. Ignored without
-   .                ISSUER_CERT. When ISSUER_CERT is set
-   .                but ISSUER_KEY is not ISSUER_CERT
-   .                will be used. See MYSSL_CA_KEY env
-   .                variable for replacement
-    --host          Domain or IP for SAN
-    --merge         Merge key and cert into a *.pem file
-    DN EXTRAS
-    =========
-    --country     ISO 3166-1 country code
-    --state       State or Province name
-    --locality    Locality name
-    --org         Organization name
-    --org-unit    Organization unit name
-    --email       Email
-  "
+  cat <<< "${SELF_TXT}" \
+    | tag_block_get --strip TPL_HELP_OPTS \
+    | tpl_compile --days "${DEF[days]}" \
+                  --cn "${DEF[cn]}"
 }
 
 help_env() {
-  print_msg "
-    ENV VARS
-    ========
-    Alternative way to pass sencitive data is via env
-    variables. It's convinient when you keep this data
-    in a file in encrypted form. The following
-    environment variables are supported:
-    * MYSSL_CA_KEY      - issuer key text
-    * MYSSL_KEYPASS     - key password
-    * MYSSL_CA_KEYPASS  - issuer key password
-  "
+  cat <<< "${SELF_TXT}" \
+    | tag_block_get --strip TPL_HELP_ENV_VARS
 }
 
 help_demo() {
   local tool="$(basename -- "${0}")"
-  print_msg "
-    DEMO
-    ====
-    \`\`\`sh
-    # Generate configuration
-    ${tool} --confgen ./my-cert-conf.sh
-   .
-    # Edit the CONF section
-    vim ./my-cert-conf.sh
-   .
-    # Run the configuration to generate CA
-   ../my-cert-conf.sh
-   .
-    # Assuming you're generating a cert signed by CA
-    # with encrypted key
-    MYSSL_CA_KEY=\"\$(cat ./ca.key)\" \\
-   .  MYSSL_CA_KEYPASS=qwerty \\
-   .  ./my-cert-conf.sh
-    \`\`\`
-  "
+  cat <<< "${SELF_TXT}" \
+    | tag_block_get --strip TPL_HELP_DEMO \
+    | tpl_compile --tool "${tool}"
 }
 
 help_import() {
-  print_msg "
-    IMPORT
-    ======
-    Certificate import options:
-    * Google Chrome
-   .  chrome://settings/certificates -> Authorities tab -> Import
-    * Firefox
-   .  about:preferences#privacy -> Certificates section
-   .  -> Certificates section -> View Certificates ...
-    * Android
-   .  Settings -> Security & Lock Screen
-   .  -> Encryption & Credentials -> Install a certificate
-    * Debian / Ubuntu
-   .  \`\`\`sh
-   .  sudo cp '\${CERTFILE}' /usr/local/share/ca-certificates
-   .  sudo update-ca-certificates
-   .  \`\`\`
-   .
-  "
+  cat <<< "${SELF_TXT}" \
+    | tag_block_get --strip TPL_HELP_IMPORT
 }
 
 help_help() {
