@@ -216,6 +216,846 @@
 #   ```
 # {/TPL_HELP_IMPORT}
 
+LOG_TOOLNAME="$(basename -- "${0}")"
+# {SHLIB_GEN}
+  ##### {CONF}
+  #####
+  #
+  # Tool name to be used in log prefix.
+  # Leave blank to use only log type for prefix
+  LOG_TOOLNAME="${LOG_TOOLNAME:-}"
+  #
+  # This three are used for logging (see logs functions description)
+  # Available values:
+  # * none    - don't log
+  # * major   - log only major
+  # * minor   - log everything
+  # If not defined or values misspelled, defaults to 'major'
+  LOG_INFO_LEVEL="${LOG_INFO_LEVEL-major}"
+  LOG_WARN_LEVEL="${LOG_WARN_LEVEL-major}"
+  LOG_ERR_LEVEL="${LOG_ERR_LEVEL-major}"
+  #
+  # Profiler
+  PROFILER_ENABLED="${PROFILER_ENABLED-false}"
+  #
+  #####
+  ##### {/CONF}
+  
+  # FUNCTIONS:
+  # * file2dest [-f] [--tag TAG] [--tag-prefix TAG_PREFIX] [--] SOURCE [DEST...]
+  # * print_stderr MSG...               (stdin MSG is supported)
+  # * print_stdout MSG...               (stdin MSG is supported)
+  # * log_* [-t LEVEL_TAG] [--] MSG...  (stdin MSG is supported)
+  # * text_ltrim TEXT...    (stdin TEXT is supported)
+  # * text_rtrim TEXT...    (stdin TEXT is supported)
+  # * text_trim TEXT...     (stdin TEXT is supported)
+  # * text_rmblank TEXT...  (stdin TEXT is supported)
+  # * text_clean TEXT...    (stdin TEXT is supported)
+  # * text_decore TEXT...   (stdin TEXT is supported)
+  # * trap_help_opt ARG...
+  # * trap_fatal [--decore] [--] RC [MSG...]
+  # * tag_node_set [--prefix PREFIX] [--suffix SUFFIX] [--] TAG CONTENT TEXT...
+  #   (stdin TEXT is supported)
+  # * tag_node_get [--prefix PREFIX] [--suffix SUFFIX] [--strip] [--] TAG TEXT...
+  #   (stdin TEXT is supported)
+  # * tag_node_rm [--prefix PREFIX] [--suffix SUFFIX] [--] TAG TEXT...
+  #   (stdin TEXT is supported)
+  # * rc_add INIT_RC ADD_RC
+  # * rc_has INIT_RC CHECK_RC
+  # * check_bool VALUE
+  # * check_unix_login VALUE
+  # * check_ip4 VALUE
+  # * check_loopback_ip4 VALUE
+  # * gen_rand [--len LEN] [--num] [--special] [--uc]
+  # * uniq_ordered [-r] -- FILE...      (stdin FILE_TEXT is supported)
+  # * template_compile [-o] [-f] [-s] [--KEY VALUE...] [--] FILE...
+  #   (stdin FILE_TEXT is supported)
+  # * sed_quote_pattern PATTERN         (stdin PATTERN is supported)
+  # * sed_quote_replace REPLACE         (stdin REPLACE is supported)
+  
+  ##############################
+  ##### PRINTING / LOGGING #####
+  ##############################
+  
+  # Print SOURCE file to DEST files. Logging via stderr
+  # with prefixed DEST. Prefixes:
+  # '{{ success }}' - successfully generated
+  # '{{ skipped }}' - already exists, not overridden
+  # '{{ failed }}'  - failed to generate files
+  #
+  # OPTIONS
+  # =======
+  # --            End of options
+  # -f, --force   Force override if DEST exists
+  # --tag         Tag to put content to
+  # --tag-prefix  Prefix for tag, must be comment symbol, defaults to '#'
+  #
+  # USAGE:
+  #   file2dest [-f] [--tag TAG] [--tag-prefix TAG_PREFIX] [--] SOURCE [DEST...]
+  # RC:
+  #   * 0 - all is fine
+  #   * 1 - some of destinations are skipped
+  #   * 2 - some of destinations are not created
+  #   * 4 - source can't be read, fatal, provides no output
+  # DEMO:
+  #   # copy to files and address all kinds of logs
+  #   file2dest ./lib.sh ./libs/lib{0..9}.sh /dev/null/subzero ~/.bashrc \
+  #   2> >(
+  #     tee \
+  #       >(template_compile -o -f --success 'Success: ' | log_info) \
+  #       >(template_compile -o -f --skipped 'Skipped: ' | log_warn) \
+  #       >(template_compile -o -f --failed 'Failed: ' | log_err) \
+  #       >/dev/null
+  #   ) | cat
+  file2dest() {
+    local source
+    local SOURCE_TXT
+    local -a DESTS
+    local FORCE=false
+    local TAG
+    local TAG_PREFIX='#'
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --            ) endopts=true ;;
+        -f|--force    ) FORCE=true ;;
+        --tag         ) shift; TAG="${1}" ;;
+        --tag-prefix  ) shift; TAG_PREFIX="${1}" ;;
+        *             )
+          [[ -z "${source+x}" ]] \
+            && source="${1}" || DESTS+=("${1}")
+        ;;
+      esac
+  
+      shift
+    done
+  
+    SOURCE_TXT="$(cat -- "${source}" 2>/dev/null)" || return 4
+  
+    [[ ${#DESTS[@]} -lt 1 ]] && DESTS+=(/dev/stdout)
+  
+    local dir
+    local real
+    local dest_content
+    local rc=0
+    local f; for f in "${DESTS[@]}"; do
+      real="$(realpath -m -- "${f}" 2>/dev/null)"
+  
+      ! ${FORCE} && [[ -f "${real}" ]] && {
+        rc=$(rc_add ${rc} 1)
+        print_stderr "{{ skipped }}${f}"
+        continue
+      }
+  
+      dir="$(dirname -- "${f}" 2>/dev/null)" \
+      && mkdir -p -- "${dir}" 2>/dev/null
+  
+      [[ -n "${TAG}" ]] && {
+        [[ -f "${f}" ]] && dest_content="$(cat "${f}" 2>/dev/null)"
+        SOURCE_TXT="$(
+          tag_node_set --prefix "${TAG_PREFIX} {" --suffix '}' \
+            -- "${TAG}" "${SOURCE_TXT}" "${dest_content}"
+        )"
+      }
+  
+      (cat <<< "${SOURCE_TXT}" > "${f}") 2>/dev/null && {
+        # don't bother logging for generated to stdout and other devnulls
+        if [[ -f ${real} ]]; then print_stderr "{{ success }}${f}"; fi
+      } || {
+        rc=$(rc_add ${rc} 2)
+        print_stderr "{{ failed }}${f}"
+        continue
+      }
+    done
+  
+    return ${rc}
+  }
+  
+  print_stderr() {
+    print_stdout "${@}" >/dev/stderr
+  }
+  
+  print_stdout() {
+    [[ ${#} -gt 0 ]] && printf -- '%s\n' "${@}" || cat
+  }
+  
+  # Log to stderr prefixed with ${LOG_TOOLNAME} and log type
+  #
+  # OPTIONS
+  # =======
+  # --          End of options
+  # -t, --tag   Log level tag. Available: major, minor
+  #             Defaults to major
+  #
+  # USAGE
+  #   log_* [-t LEVEL_TAG] [--] MSG...
+  #   log_* [-t LEVEL_TAG] <<< MSG
+  #   # combined with `text_decore`
+  #   text_decore MSG... | log_* [-t LEVEL_TAG]
+  # LEVELS
+  #   # Configure level you want to log
+  #   LOG_INFO_LEVEL=major
+  #
+  #   # ... some code here ...
+  #
+  #   # This will not log
+  #   log_info -t minor "HELLO MINOR"
+  #
+  #   # And this will, as major is default
+  #   log_info "HELLO MAJOR"
+  #
+  #   # This will never log
+  #   LOG_INFO_LEVEL=none log_info "HELLO MAJOR"
+  log_info() {
+    LEVEL="${LOG_INFO_LEVEL}" \
+    _log_type info "${@}"
+  }
+  log_warn() {
+    LEVEL="${LOG_WARN_LEVEL}" \
+    _log_type warn "${@}"
+  }
+  log_err() {
+    LEVEL="${LOG_ERR_LEVEL}" \
+    _log_type err "${@}"
+  }
+  
+  _log_type() {
+    local TYPE="${1}"
+    local TAG=major
+    local -a MSGS
+    shift
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --        ) endopts=true ;;
+        -t|--tag  ) shift; TAG="${1:-${TAG}}" ;;
+        *         ) MSGS+=("${1}") ;;
+      esac
+  
+      shift
+    done
+  
+    [[ "${TAG}" == none ]] && TAG=major
+    LEVEL="${LEVEL:-major}"
+  
+    local -A level2num=( [none]=0 [major]=1 [minor]=2 )
+    local req_level="${level2num["${LEVEL}"]:-${level2num[major]}}"
+    local log_tag="${level2num["${TAG}"]:-${level2num[major]}}"
+  
+    # If reqired level is lower then current log tag, nothing to do here
+    [[ ${req_level} -lt ${log_tag} ]] && return 0
+  
+    local prefix="${LOG_TOOLNAME:+"${LOG_TOOLNAME}:"}${TYPE}"
+    print_stdout "${MSGS[@]}" | sed -e 's/^/['"${prefix}"'] /' | print_stderr
+  }
+  
+  ################
+  ##### TEXT #####
+  ################
+  
+  text_ltrim() {
+    print_stdout "${@}" | sed 's/^\s\+//'
+  }
+  
+  text_rtrim() {
+    print_stdout "${@}" | sed 's/\s\+$//'
+  }
+  
+  text_trim() {
+    print_stdout "${@}" | sed -e 's/^\s\+//' -e 's/\s\+$//'
+  }
+  
+  # remove blank and space only lines
+  text_rmblank() {
+    print_stdout "${@}" | grep -vx '\s*'
+  }
+  
+  # apply trim and rmblank
+  text_clean() {
+    text_trim "${@}" | text_rmblank
+  }
+  
+  # Decoreate text:
+  # * apply clean
+  # * remove starting '.'
+  # Prefix line with '.' to preserve empty line or offset
+  #
+  # USAGE
+  #   text_decore MSG...
+  #   text_decore <<< MSG
+  text_decore() {
+    text_clean "${@}" | sed 's/^\.//'
+  }
+  
+  ####################
+  ##### TRAPPING #####
+  ####################
+  
+  # Detect one of help options: -h, -?, --help
+  #
+  # USAGE:
+  #   trap_help_opt ARG...
+  # RC:
+  #   * 0 - help option detected
+  #   * 1 - no help option
+  #   * 2 - help option detected, but there are extra args,
+  #         invalid args are printed to stdout
+  trap_help_opt() {
+    local is_help=false
+  
+    [[ "${1}" =~ ^(-h|-\?|--help)$ ]] \
+      && is_help=true && shift
+  
+    local -a inval
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      inval+=("${1}")
+      shift
+    done
+  
+    ! ${is_help} && return 1
+  
+    ${is_help} && [[ ${#inval[@]} -gt 0 ]] && {
+      print_stdout "${inval[@]}"
+      return 2
+    }
+  
+    return 0
+  }
+  
+  # Exit with RC if it's > 0. If no MSG, no err message will be logged.
+  # * RC is required to be numeric!
+  # * not to be used in scripts sourced to ~/.bashrc!
+  #
+  # Options:
+  #   --decore  - apply text_decore over input messages
+  # USAGE:
+  #   trap_fatal [--decore] [--] RC [MSG...]
+  trap_fatal() {
+    local rc
+    local -a msgs
+    local decore=false
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+      case "${arg}" in
+        --        ) endopts=true ;;
+        --decore  ) decore=true ;;
+        *         ) [[ -z "${rc+x}" ]] && rc="${1}" || msgs+=("${1}") ;;
+      esac
+      shift
+    done
+  
+    [[ -n "${rc+x}" ]] || return 0
+    [[ $rc -gt 0 ]] || return ${rc}
+  
+    [[ ${#msgs[@]} -gt 0 ]] && {
+      local filter=(print_stdout)
+      ${decore} && filter=(text_decore)
+      "${filter[@]}" "${msgs[@]}" | _log_type fatal
+    }
+  
+    exit ${rc}
+  }
+  
+  ################
+  ##### TAGS #####
+  ################
+  
+  # USAGE:
+  #   tag_node_set [--prefix PREFIX] [--suffix SUFFIX] \
+  #     [--] TAG CONTENT TEXT...
+  #   tag_node_set [--prefix PREFIX] [--suffix SUFFIX] \
+  #     [--] TAG CONTENT <<< TEXT
+  tag_node_set() {
+    local tag
+    local content
+    local text
+    local prefix
+    local suffix
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --        ) endopts=true ;;
+        --prefix  ) shift; prefix="${1}" ;;
+        --suffix  ) shift; suffix="${1}" ;;
+        *         )
+          if [[ -z "${tag+x}" ]]; then
+            tag="${1}"
+          elif [[ -z "${content+x}" ]]; then
+            content="${1}"
+          else
+            text+="${text:+$'\n'}${1}"
+          fi
+          ;;
+      esac
+  
+      shift
+    done
+  
+    [[ -n "${text+x}" ]] || text="$(cat)"
+  
+    local open="$(_tag_mk_openline "${tag}" "${prefix}" "${suffix}")"
+    local close="$(_tag_mk_closeline "${tag}" "${prefix}" "${suffix}")"
+  
+    local add_text
+    add_text="$(printf '%s\n%s\n%s\n' \
+      "${open}" "$(sed 's/^/  /' <<< "${content}")" "${close}")"
+  
+    local range
+    range="$(_tag_get_lines_range "${open}" "${close}" "${text}")" || {
+      printf '%s\n' "${text:+${text}$'\n'}${add_text}"
+      return
+    }
+  
+    head -n "$(( ${range%%,*} - 1 ))" <<< "${text}"
+    printf '%s\n' "${add_text}"
+    tail -n +"$(( ${range##*,} + 1 ))" <<< "${text}"
+  }
+  
+  # USAGE:
+  #   tag_node_get [--prefix PREFIX] [--suffix SUFFIX] \
+  #     [--strip] [--] TAG TEXT...
+  #   tag_node_get [--prefix PREFIX] [--suffix SUFFIX] \
+  #     [--strip] [--] TAG <<< TEXT
+  # RC:
+  #   0 - all is fine content is returned
+  #   1 - tag not found
+  tag_node_get() {
+    local tag
+    local text
+    local prefix
+    local suffix
+    local strip=false
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --        ) endopts=true ;;
+        --prefix  ) shift; prefix="${1}" ;;
+        --suffix  ) shift; suffix="${1}" ;;
+        --strip   ) strip=true ;;
+        *         )
+          [[ -n "${tag+x}" ]] \
+            && text+="${text+$'\n'}${1}" \
+            || tag="${1}"
+          ;;
+      esac
+  
+      shift
+    done
+  
+    [[ -n "${text+x}" ]] || text="$(cat)"
+  
+    local open="$(_tag_mk_openline "${tag}" "${prefix}" "${suffix}")"
+    local close="$(_tag_mk_closeline "${tag}" "${prefix}" "${suffix}")"
+  
+    local range
+    range="$(_tag_get_lines_range "${open}" "${close}" "${text}")" || {
+      return 1
+    }
+  
+    local -a filter=(cat)
+    ${strip} && filter=(sed -e '1d;$d;s/^  //')
+  
+    sed -e "${range}!d" <<< "${text}" | "${filter[@]}"
+  }
+  
+  # USAGE:
+  #   tag_node_rm [--prefix PREFIX] \
+  #     [--suffix SUFFIX] [--] TAG TEXT...
+  #   tag_node_rm [--prefix PREFIX] \
+  #     [--suffix SUFFIX] [--] TAG <<< TEXT
+  # RC:
+  #   0 - all is fine content is returned
+  #   1 - tag not found
+  tag_node_rm() {
+    local tag
+    local text
+    local prefix
+    local suffix
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --        ) endopts=true ;;
+        --prefix  ) shift; prefix="${1}" ;;
+        --suffix  ) shift; suffix="${1}" ;;
+        *         )
+          [[ -n "${tag+x}" ]] \
+            && text+="${text+$'\n'}${1}" \
+            || tag="${1}"
+          ;;
+      esac
+  
+      shift
+    done
+  
+    [[ -n "${text+x}" ]] || text="$(cat)"
+  
+    local open="$(_tag_mk_openline "${tag}" "${prefix}" "${suffix}")"
+    local close="$(_tag_mk_closeline "${tag}" "${prefix}" "${suffix}")"
+  
+    local range
+    range="$(_tag_get_lines_range "${open}" "${close}" "${text}")" || {
+      print_stdout "${text}"
+      return 1
+    }
+  
+    sed -e "${range}d" <<< "${text}"
+  }
+  
+  # RC > 0 or comma separated open and close line numbers
+  _tag_get_lines_range() {
+    local open="${1}"
+    local close="${2}"
+    local text="${3}"
+  
+    local close_rex
+    close_rex="$(sed_quote_pattern "${close}")"
+  
+    local lines_numbered
+    lines_numbered="$(
+      grep -m 1 -n -A 9999999 -Fx "${open}" <<< "${text}" \
+      | grep -m 1 -B 9999999 -e "^[0-9]\+-${close_rex}$"
+    )" || return $?
+  
+    sed -e 's/^\([0-9]\+\).*/\1/' -n -e '1p;$p' <<< "${lines_numbered}" \
+    | xargs | tr ' ' ','
+  }
+  
+  _tag_mk_openline() {
+    local tag="${1}"
+    local prefix="${2}"
+    local suffix="${3}"
+    printf -- '%s' "${prefix}${tag}${suffix}"
+  }
+  
+  _tag_mk_closeline() {
+    local tag="${1}"
+    local prefix="${2}"
+    local suffix="${3}"
+    printf -- '%s' "${prefix}/${tag}${suffix}"
+  }
+  
+  #######################
+  ##### RETURN CODE #####
+  #######################
+  
+  rc_add() {
+    echo $(( ${1} | ${2} ))
+  }
+  
+  rc_has() {
+    [[ $(( ${1} & ${2} )) -eq ${2} ]]
+  }
+  
+  ######################
+  ##### VALIDATION #####
+  ######################
+  
+  check_bool() {
+    [[ "${1}" =~ ^(true|false)$ ]]
+  }
+  
+  check_unix_login() {
+    # https://unix.stackexchange.com/questions/157426/what-is-the-regex-to-validate-linux-users
+    local rex='[a-z_]([a-z0-9_-]{0,31}|[a-z0-9_-]{0,30}\$)'
+    grep -qEx -- "${rex}" <<< "${1}"
+  }
+  
+  check_ip4() {
+    local seg_rex='(0|[1-9][0-9]*)'
+  
+    grep -qxE "(${seg_rex}\.){3}${seg_rex}" <<< "${1}" || return 1
+  
+    local segments
+    mapfile -t segments <<< "$(tr '.' '\n' <<< "${1}")"
+    local seg; for seg in "${segments[@]}"; do
+      [[ "${seg}" -gt 255 ]] && return 1
+    done
+  
+    return 0
+  }
+  
+  check_loopback_ip4() {
+    check_ip4 "${1}" && grep -q '^127' <<< "${1}"
+  }
+  
+  #####################
+  ##### PROFILING #####
+  #####################
+  
+  profiler_init() {
+    ${PROFILER_ENABLED-false} || return
+    [[ -n "${PROFILER_TIMESTAMP}" ]] && return
+  
+    PROFILER_TIMESTAMP=$(( $(date +%s%N) / 1000000 ))
+    export PROFILER_TIMESTAMP
+  }
+  
+  profiler_run() {
+    ${PROFILER_ENABLED-false} || return
+    [[ -n "${PROFILER_TIMESTAMP}" ]] || return
+  
+    local message="${1}"
+  
+    local time=$(( ($(date +%s%N) / 1000000) - ${PROFILER_TIMESTAMP} ))
+  
+    {
+      printf '%6s.%03d' $(( time / 1000 )) $(( time % 1000 ))
+      [[ -n "${message}" ]] \
+        && printf ' %s\n' "${message}" \
+        || printf '\n'
+    } | _log_type profile
+  }
+  
+  ################
+  ##### MISC #####
+  ################
+  
+  # Generate a random value, lower case latters only by default
+  # https://unix.stackexchange.com/a/230676
+  #
+  # OPTIONS
+  # =======
+  # --len       Value length, defaults to 10
+  # --num       Include numbers
+  # --special   Include special characters
+  # --uc        Include upper case
+  #
+  # USAGE:
+  #   gen_rand [--len LEN] [--num] [--special] [--uc]
+  gen_rand() {
+    local len=10
+    local num=false
+    local special=false
+    local uc=false
+    local filter='a-z'
+  
+    while :; do
+      [[ -n "${1+x}" ]] || break
+      case "${1}" in
+        --len     ) shift; len="${1}" ;;
+        --num     ) num=true ;;
+        --special ) special=true ;;
+        --uc      ) uc=true ;;
+      esac
+      shift
+    done
+  
+    ${num} && filter+='0-9'; ${uc} && filter+='A-Z'
+    ${special} && filter+='!"#$%&'\''()*+,-./:;<=>?@[\]^_`{|}~'
+    LC_ALL=C tr -dc "${filter}" </dev/urandom | fold -w "${len}" | head -n 1
+  }
+  
+  # Get unique lines preserving lines order. By default top unique
+  # lines are prioritized
+  #
+  # OPTIONS
+  # =======
+  # --              End of options
+  # -r, --reverse   Prioritize bottom unique values
+  #
+  # USAGE:
+  #   uniq_ordered [-r] -- FILE...
+  #   uniq_ordered [-r] <<< FILE_TEXT
+  uniq_ordered() {
+    local -a revfilter=(cat)
+    local -a files
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --            ) endopts=true ;;
+        -r|--reverse  ) revfilter=(tac) ;;
+        *             ) files+=("${1}") ;;
+      esac
+  
+      shift
+    done
+  
+    # https://unix.stackexchange.com/a/194790
+    cat "${files[@]}" | "${revfilter[@]}" \
+    | cat -n | sort -k2 -k1n | uniq -f1 | sort -nk1,1 | cut -f2- \
+    | "${revfilter[@]}"
+  }
+  
+  # Compile template FILE replacing '{{ KEY }}' with VALUE.
+  # In case of duplicated --KEY option last wins. Nothing
+  # happens if FILE path is invalid.
+  # Limitations:
+  # * multiline KEY and VALUE are not allowed
+  #
+  # OPTIONS
+  # =======
+  # --  End of options
+  # -o  Only output affected lines
+  # -f  Substitute KEY only when it's first thing in the line
+  # -s  Substitute only single occurrence
+  #
+  # USAGE:
+  #   template_compile [-o] [-f] [-s] [--KEY VALUE...] [--] FILE...
+  #   template_compile [-o] [-f] [-s] [--KEY VALUE...] <<< FILE_TEXT
+  # Demo:
+  #   # outputs: "account=varlog, password=changeme"
+  #   template_compile --user varlog --pass changeme \
+  #     <<< "login={{ user }}, password={{ pass }}"
+  template_compile() {
+    local -a files
+    local -A kv
+    local first=false
+    local single=false
+    local only=false
+  
+    local endopts=false
+    local arg; while :; do
+      [[ -n "${1+x}" ]] || break
+      ${endopts} && arg='*' || arg="${1}"
+  
+      case "${arg}" in
+        --  ) endopts=true ;;
+        -o  ) only=true ;;
+        -f  ) first=true ;;
+        -s  ) single=true ;;
+        --* ) shift; kv[${arg:2}]="${1}" ;;
+        *   ) files+=("${1}") ;;
+      esac
+  
+      shift
+    done
+  
+    local key
+    local value
+    for key in "${!kv[@]}"; do
+      value="$(sed_quote_replace "${kv["${key}"]}")"
+      kv["${key}"]="${value}"
+    done
+  
+    local template
+    template="$(cat -- "${files[@]}" 2>/dev/null)"
+  
+    local -a filter
+    local expression
+    if ${only}; then
+      for key in "${!kv[@]}"; do
+        # https://www.cyberciti.biz/faq/unix-linux-sed-print-only-matching-lines-command/
+        filter=(sed)
+        key="$(sed_quote_pattern "${key}")"
+        expression="{{\s*${key}\s*}}/${kv["${key}"]}"
+        ${first} && expression="^${expression}"
+        expression="s/${expression}/"
+        ! ${single} && expression+='g'
+        ${only} && filter+=(-n) && expression+='p'
+        filter+=("${expression}")
+  
+        template="$("${filter[@]}" <<< "${template}")"
+      done
+    else
+      # lighter than with ONLY option
+  
+      # initially passthrough filter
+      filter=(sed -e 's/^/&/')
+  
+      for key in "${!kv[@]}"; do
+        key="$(sed_quote_pattern "${key}")"
+        expression="{{\s*${key}\s*}}/${kv["${key}"]}"
+        ${first} && expression="^${expression}"
+        filter+=(-e "s/${expression}/g")
+      done
+  
+      template="$("${filter[@]}" <<< "${template}")"
+    fi
+  
+    [[ -n "${template}" ]] && cat <<< "${template}"
+  }
+  
+  # https://gist.github.com/varlogerr/2c058af053921f1e9a0ddc39ab854577#file-sed-quote
+  sed_quote_pattern() {
+    sed -e 's/[]\/$*.^[]/\\&/g' <<< "${1-$(cat)}"
+  }
+  sed_quote_replace() {
+    sed -e 's/[\/&]/\\&/g' <<< "${1-$(cat)}"
+  }
+  
+  ##########################
+  ##### OVERRIDES DEMO #####
+  ##########################
+  
+  # ## In most cases it's the first candidate for override
+  #
+  # eval "$(typeset -f file2dest | sed '1s/ \?(/_overriden_ (/')"
+  # file2dest() {
+  #   # https://unix.stackexchange.com/a/43536
+  #   file2dest_overriden_ "${@}" \
+  #   2> >(
+  #     tee \
+  #       >(template_compile -o -f --success 'Success: ' | log_info) \
+  #       >(template_compile -o -f --skipped 'Skipped: ' | log_warn) \
+  #       >(template_compile -o -f --failed 'Failed: ' | log_err) \
+  #       >/dev/null
+  #   ) | cat
+  #
+  #   # https://unix.stackexchange.com/a/73180
+  #   return "${PIPESTATUS[0]}"
+  # }
+  
+  # ## A lighter version of tags, less secure, but fine for personal data
+  # ## sets. Disregards suffix and prefix, suffix is hardcoded to '#'
+  #
+  #_tag_mk_openline() { printf -- '%s' "#${1}"; }
+  #_tag_mk_closeline() { printf -- '%s' "#${1}"; }
+  #_tag_get_lines_range() {
+  #  local open="${1}"
+  #  local close="${2}"
+  #
+  #  local lines_numbered
+  #  lines_numbered="$(grep -m 2 -n -Fx "${open}" <<< "${text}")" || return $?
+  #
+  #  sed -e 's/^\([0-9]\+\).*/\1/' -n -e '1p;$p' <<< "${lines_numbered}" \
+  #  | xargs | tr ' ' ','
+  #}
+# {/SHLIB_GEN}
+
+# {SHLIB_OVERRIDES}
+eval "$(typeset -f file2dest | sed '1s/ \?(/_overriden_ (/')"
+file2dest() {
+  file2dest_overriden_ "${@}" \
+  2> >(
+    tee \
+      >(template_compile -o -f --success 'Success: ' | log_info) \
+      >(template_compile -o -f --skipped 'Skipped: ' | log_warn) \
+      >(template_compile -o -f --failed 'Failed: ' | log_err) \
+      >/dev/null
+  ) | cat
+
+  return "${PIPESTATUS[0]}"
+}
+# {/SHLIB_OVERRIDES}
+
 declare SELF_PATH
 declare SELF_TXT
 SELF_PATH="$(realpath "${BASH_SOURCE[0]}")"
@@ -264,140 +1104,25 @@ CONF+=(
 
 declare -a ERRBAG=()
 
-# logging functions
-{
-  print_msg() {
-    local res
-    res="$(printf -- '%s\n' "${@}" \
-      | sed -e 's/^\s*//' -e 's/\s*$//' \
-      | grep -vFx '' | sed 's/^\.//')"
-    [[ -n "${res}" ]] || return 1
-    printf -- '%s\n' "${res}"
-    return 0
-  }
-  print_err() { print_msg "${@}" >&2; }
-
-  log_msg() {
-    print_msg "${@}" | sed 's/^/[myssl] /'
-  }
-  log_err() { log_msg "${@}" >&2; }
-
-  log_fail_rc() {
-    local rc=${1}
-    shift
-    local msg="${@}"
-
-    [[ "${rc}" -lt 1 ]] && return ${rc}
-
-    log_err "${msg[@]}"
-    exit "${rc}"
-  }
-}
-
-# misc functions
-{
-  # https://gist.github.com/varlogerr/2c058af053921f1e9a0ddc39ab854577#file-sed-quote
-  sed_quote_key() {
-    local key="${1-$(cat)}"
-    sed -e 's/[]\/$*.^[]/\\&/g' <<< "${key}"
-  }
-  sed_quote_replace() {
-    local replace="${1-$(cat)}"
-    sed -e 's/[\/&]/\\&/g' <<< "${replace}"
-  }
-}
-
 # tag and template functions
 {
-  # Get '# {TAG}' to '# {/TAG}' (inclusive) block from FILE
-  # Usage:
-  #   tpl_block_read [OPTIONS] [--] TAG FILE...
-  #   tpl_block_read [OPTIONS] [--] TAG <<< TEXT
-  # Options:
-  #   --unhash  - uncomment non-TAG lines
-  #   --untag   - remove TAG lines
-  #   --strip   - same as `--unhash --untag`
-  tag_block_get() {
-    local -a pos
-    local unhash=false
-    local untag=false
-    # initially passthrough filter
-    local -a filter=(sed -E -e 's/^/&/')
-
-    local endopts=false
-    local key
-    while :; do
-      [[ -n "${1+x}" ]] || break
-      ${endopts} && key='*' || key="${1}"
-      case "${key}" in
-        --unhash) unhash=true ;;
-        --untag ) untag=true ;;
-        --strip ) unhash=true; untag=true ;;
-        --  ) endopts=true ;;
-        *   ) pos+=("${1}") ;;
-      esac
-      shift
-    done
-
-    local tag="${pos[0]}"
-    ${unhash} && filter+=(
-      -e '1s/^# \{'"$tag"'\}$/#&/'
-      -e '$s/^# \{\/'"$tag"'\}$/#&/'
-      -e 's/^# ?//'
-    )
-    ${untag} && filter+=(
-      -e '1d' -e '$d'
-    )
-
-    cat -- "${pos[@]:1}" \
-    | grep -A 999999 -Fx -- "# {$tag}" \
-    | grep -B 999999 -Fx -- "# {/$tag}" \
-    | "${filter[@]}" \
-    | cat
+  # USAGE:
+  #   tag_comment_get TAG TEXT...
+  #   tag_comment_get TAG <<< TEXT
+  tag_comment_get() {
+    local tag="${1}"
+    shift
+    tag_node_get --prefix '# {' --suffix '}' -- "${tag}" "${@}"
   }
 
-  # Compile template FILE replacing '{{ KEY }}' with value.
-  # In case of duplicated --KEY option last wins.
-  # Usage:
-  #   tpl_compile [--KEY VALUE...] FILE...
-  #   tpl_compile [--KEY VALUE...] <<< TEXT
-  # Demo:
-  #   tpl_compile --user varlog --pass changeme \
-  #     <<< "login={{ user }}, password={{ pass }}"
-  #   # output: "account=varlog, password=changeme"
-  tpl_compile() {
-    local -a pos
-    local -A kv
-    # initially passthrough filter
-    local -a filter=(sed -e 's/^/&/')
-
-    local endopts=false
-    local key
-    while :; do
-      [[ -n "${1+x}" ]] || break
-      ${endopts} && key='*' || key="${1}"
-      case "${key}" in
-        --  ) endopts=true ;;
-        --* ) shift; kv[${key:2}]="${1}" ;;
-        *   ) pos+=("${1}") ;;
-      esac
-      shift
-    done
-
-    local tpl="$(cat -- "${pos[@]}")"
-
-    local k
-    local v
-    for k in "${!kv[@]}"; do
-      v="$(sed_quote_replace "${kv[$k]}")"
-      kv[$k]="${v}"
-    done
-    for k in "${!kv[@]}"; do
-      k="$(sed_quote_key "${k}")"
-      filter+=(-e "s/{{\s*${k}\s*}}/${kv[$k]}/g")
-    done
-
-    "${filter[@]}" <<< "${tpl}"
+  # USAGE:
+  #   tag_comment_strip_filter TAG <<< TEXT
+  tag_comment_strip_filter() {
+    local tag="${1}"
+    local tag_pattern="$(sed_quote_pattern "# {${tag}${suffix}}")"
+    sed -e '1s/^'"${tag_pattern}"'$/#&/' \
+        -e '$s/^'"${tag_pattern}"'$/#&/' \
+        -e 's/^# \?//' -e '1d;$d'
   }
 
   get_body() {
@@ -500,7 +1225,7 @@ declare -a ERRBAG=()
     unset _opts_main
 
     declare -A overrides
-    local overkeys_rex="$(print_msg "
+    local overkeys_rex="$(text_decore "
       issuer-key
       issuer-cert
       days
@@ -541,7 +1266,7 @@ declare -a ERRBAG=()
     done
 
     [[ -z "${overrides[out-prefix]+x}" && ${#overrides[@]} -gt 0 ]] \
-      && log_fail_rc 1 "
+      && trap_fatal --decore -- 1 "
         PREFIX is required
       .
         Issue \`${0} -h\` for help
@@ -558,8 +1283,7 @@ declare -a ERRBAG=()
   }; _opts_main "${@}"
 }
 
-[[ ${#ERRBAG} -gt 0 ]] \
-  && log_fail_rc 1 "
+[[ ${#ERRBAG} -lt 1 ]] || trap_fatal --decore -- $? "
     Unsupported or conflicting arguments:
     $(printf -- '* %s\n' "${ERRBAG[@]}" | sort -n | uniq)
    .
@@ -567,38 +1291,42 @@ declare -a ERRBAG=()
   "
 
 help_description() {
-  print_msg "Generate certificates"
+  text_decore "Generate certificates"
 }
 
 help_usage() {
   local tool="$(basename -- "${0}")"
-  cat <<< "${SELF_TXT}" \
-    | tag_block_get --strip TPL_HELP_USAGE \
-    | tpl_compile --tool "${tool}"
+  local tag=TPL_HELP_USAGE
+  tag_comment_get "${tag}" "${SELF_TXT}" \
+  | tag_comment_strip_filter "${tag}" \
+  | template_compile --tool "${tool}"
 }
 
 help_opts() {
-  cat <<< "${SELF_TXT}" \
-    | tag_block_get --strip TPL_HELP_OPTS \
-    | tpl_compile --days "${DEF[days]}" \
-                  --cn "${DEF[cn]}"
+  local tag=TPL_HELP_OPTS
+  tag_comment_get "${tag}" "${SELF_TXT}" \
+  | tag_comment_strip_filter "${tag}" \
+  | template_compile --days "${DEF[days]}" --cn "${DEF[cn]}"
 }
 
 help_env() {
-  cat <<< "${SELF_TXT}" \
-    | tag_block_get --strip TPL_HELP_ENV_VARS
+  local tag=TPL_HELP_ENV_VARS
+  tag_comment_get "${tag}" "${SELF_TXT}" \
+  | tag_comment_strip_filter "${tag}"
 }
 
 help_demo() {
   local tool="$(basename -- "${0}")"
-  cat <<< "${SELF_TXT}" \
-    | tag_block_get --strip TPL_HELP_DEMO \
-    | tpl_compile --tool "${tool}"
+  local tag=TPL_HELP_DEMO
+  tag_comment_get "${tag}" "${SELF_TXT}" \
+  | tag_comment_strip_filter "${tag}" \
+  | template_compile --tool "${tool}"
 }
 
 help_import() {
-  cat <<< "${SELF_TXT}" \
-    | tag_block_get --strip TPL_HELP_IMPORT
+  local tag=TPL_HELP_IMPORT
+  tag_comment_get "${tag}" "${SELF_TXT}" \
+  | tag_comment_strip_filter "${tag}"
 }
 
 help_help() {
@@ -637,10 +1365,11 @@ _confgen() {
   unset _confgen
 
   ${1} || return 0
-  shift
 
-  local force="${1}"
-  shift
+  local -a f2d_opts
+  ${2} && f2d_opts+=(--force)
+
+  shift; shift
   local -a dests=("${@}")
   local shebang='#!/usr/bin/env bash'
   local self_confblock
@@ -653,74 +1382,45 @@ _confgen() {
 
   self_body="$(get_body "${SELF_TXT}")"
   self_confblock="$(
-    cat <<< "${self_body}" \
-    | tag_block_get --strip TPL_MYSSL_CONF \
-    | tpl_compile "${tpl_opts[@]}" \
-    | cat
+    tag=TPL_MYSSL_CONF
+    tag_comment_get "${tag}" "${self_body}" \
+    | tag_comment_strip_filter "${tag}" \
+    | template_compile "${tpl_opts[@]}"
   )"
 
-  [[ ${#dests} -gt 0 ]] || {
-    printf -- '%s\n\n%s\n\n%s\n' \
-      "${shebang}" "${self_confblock}" "${self_body}"
-    exit 0
-  }
+  [[ ${#dests[@]} -gt 0 ]] || dests+=(/dev/stdout)
 
-  local dest_dir
   local confblock
+  local real
   for dest in "${dests[@]}"; do
-    grep -qEx '\s*' <<< "${dest}" && {
-      ERRBAG+=("Conf file can't be with empty name")
-      continue
-    }
-    if ! ${force} && [[ -e "${dest}" ]]; then
-      ERRBAG+=("Conf file already exists: ${dest}")
-      continue
-    fi
+    real="$(realpath -m -- "${dest}" 2>/dev/null)"
 
-    dest_dir="$(dirname -- "${dest}")"
-    mkdir -p -- "${dest_dir}" 2>/dev/null || {
-      ERRBAG+=("Can't create conf file directory: ${dest_dir}")
-      continue
-    }
-
-    confblock="$(
+    [[ -f "${real}" ]] && confblock="$(
       cat -- "${dest}" 2>/dev/null \
-      | tag_block_get CONFBLOCK
+      | tag_comment_get CONFBLOCK
     )"
     confblock="${confblock:-${self_confblock}}"
 
-    printf -- '%s\n\n%s\n\n%s\n' \
-      "${shebang}" "${confblock}" "${self_body}" \
-    | tee "${dest}" >/dev/null 2>&1 || {
-      ERRBAG+=("Can't write to conf file: ${dest}")
-      continue
-    }
+    file2dest "${f2d_opts[@]}" -- <(
+      printf -- '%s\n\n%s\n\n%s\n' \
+        "${shebang}" "${confblock}" "${self_body}"
+    ) "${dest}"
 
-    chmod 0755 "${dest}" || {
-      ERRBAG+=("Can't chmod: ${dest}")
-      continue
-    }
+    [[ ! -f "${real}" ]] && continue
 
-    log_err "Generated: ${dest}"
+    chmod 0755 -- "${dest}" 2>/dev/null \
+      || log_warn "Can't chmod 0755: ${dest}"
   done
-
-  [[ ${#ERRBAG[@]} -gt 0 ]] && {
-    log_err "
-      Errors:
-      $(printf -- '* %s\n' "${ERRBAG[@]}")
-    " && return 1
-  }
 
   exit 0
 }; _confgen "${OPTS_CONFGEN[@]}" || exit $?
 
-[[ -n "${CONF[out-prefix]}" ]] \
-  || log_fail_rc 1 "
+[[ -n "${CONF[out-prefix]}" ]] || trap_fatal --decore -- $? "
     Can't generate certificates.
     1. If you're using this script installed system wide:
-    * Option 1: Use PREFIX argument of the command.
-    * Option 2: generate a configuration, configure and
-   .  execute it.
+   .  * Option 1: Use PREFIX argument of the command.
+   .  * Option 2: generate a configuration, configure and
+   .    execute it.
     2. If you're using a generated configuration, just
    .  make sure CONF['out-prefix'] is configured.
     3. If you downloaded this script want to use it stand
@@ -736,18 +1436,15 @@ _confgen() {
 
 filename="$(basename -- "${CONF[out-prefix]}")"
 
-TMPDIR="$(/bin/mktemp -d --suffix '-mkssl')" || {
-  log_fail_rc 1 "Error creating temp directory"
-}
+TMPDIR="$(/bin/mktemp -d --suffix "-$(basename -- "${0}")")" \
+  || trap_fatal -- $? "Error creating temp directory"
 
-[[ "${CONF[encrypt]}" =~ ^(true|false)$ ]] || {
-  log_fail_rc 1 "Invalid ENCRYPT value: ${CONF[encrypt]}"
-}
-[[ "${CONF[merge]}" =~ ^(true|false)$ ]] || {
-  log_fail_rc 1 "Invalid MERGE value: ${CONF[merge]}" && exit 1
-}
+[[ "${CONF[encrypt]}" =~ ^(true|false)$ ]] \
+  || trap_fatal -- $? "Invalid ENCRYPT value: ${CONF[encrypt]}"
+[[ "${CONF[merge]}" =~ ^(true|false)$ ]] \
+  || trap_fatal -- $? "Invalid MERGE value: ${CONF[merge]}"
 
-CONF[hosts]="$(print_msg "${CONF[hosts]}")"
+CONF[hosts]="$(text_clean "${CONF[hosts]}")"
 CONF[issuer-key]="${CONF[issuer-key]:-${CONF[issuer-cert]}}"
 
 OUTDIR="$(dirname -- "${CONF[out-prefix]}")"
@@ -757,21 +1454,23 @@ TMPREQFILE="${TMPDIR}/${filename}.csr"
 
 KEYFILE="${OUTDIR}/${filename}.key"
 CERTFILE="${OUTDIR}/${filename}.crt"
-REQFILE="${OUTDIR}/${filename}.csr"
+MERGEFILE="${OUTDIR}/${filename}.pem"
 
-declare -r IS_CA="$([[ -n "${CONF[hosts]}" ]] && echo false || echo true)"
+declare IS_CA=true
+[[ -n "${CONF[hosts]}" ]] && IS_CA=false
 
-for v in KEYFILE CERTFILE REQFILE; do
+declare -a check_files=("${KEYFILE}" "${CERTFILE}")
+${CONF[merge]} && check_files=("${MERGEFILE}")
+
+declare f; for f in "${check_files[@]}"; do
   ${CONF[force]} && break
-  [[ -e "${!v}" ]] && ERRBAG+=("${!v}")
+  [[ -e "${f}" ]] && ERRBAG+=("${f}")
 done
 
-[[ ${#ERRBAG[@]} -gt 0 ]] && {
-  log_fail_rc 1 "
-    Files already exist:
-    $(printf -- '* %s\n' "${ERRBAG[@]}")
-  "
-}
+[[ ${#ERRBAG[@]} -lt 1 ]] || trap_fatal --decore -- $? "
+  Files already exist:
+  $(printf -- '* %s\n' "${ERRBAG[@]}")
+"
 
 MYSSL_KEYPASS="${MYSSL_KEYPASS-$(
   cat -- "${CONF[passfile]}" 2>/dev/null
@@ -807,10 +1506,10 @@ _mk_openssl_conffile() {
 
   local conffile_txt
   conffile_txt="$(
-    cat <<< "${SELF_TXT}" \
-    | tag_block_get --strip TPL_OPENSSL_CONF \
-    | tpl_compile --is-ca "${IS_CA^^}" --cn "${CONF[cn]}" \
-    | cat
+    tag=TPL_OPENSSL_CONF
+    tag_comment_get "${tag}" "${SELF_TXT}" \
+    | tag_comment_strip_filter "${tag}" \
+    | template_compile --is-ca "${IS_CA^^}" --cn "${CONF[cn]}"
   )"
 
   local lineno
@@ -828,12 +1527,18 @@ _mk_openssl_conffile() {
     # for valid conffile
     conffile_txt+=$'\n'"DNS.1 = localhost"
   } || {
-    declare ip_rex='([0-9]{1,3}\.){3}[0-9]{1,3}'
     declare ips
     declare domains
 
-    domains="$(grep -vxE "${ip_rex}" <<< "${CONF[hosts]}")"
-    ips="$(grep -xE "${ip_rex}" <<< "${CONF[hosts]}")"
+    local -a vals
+    [[ -n "${CONF[hosts]}" ]] && mapfile -t vals <<< "${CONF[hosts]}"
+    local val; for val in "${vals[@]}"; do
+      check_ip4 "${val}" && {
+        ips+="${ips+$'\n'}${val}"
+        continue
+      }
+      domains+="${domains+$'\n'}${val}"
+    done
 
     conffile_txt+="${domains:+$'\n'$(
       cat -n <<< "${domains}" \
@@ -842,20 +1547,20 @@ _mk_openssl_conffile() {
       | sed -E 's/^\s*([0-9]+)\s*/IP.\1 = /')}"
   }
 
-  tee "${TMPCONFFILE_CRT}" <<< "${conffile_txt}" >/dev/null 2>&1
-  log_fail_rc $? "Error creating temp cert conffile: ${TMPCONFFILE_CRT}"
+  tee "${TMPCONFFILE_CRT}" <<< "${conffile_txt}" >/dev/null 2>&1 \
+    || trap_fatal -- $? "Error creating temp cert conffile: ${TMPCONFFILE_CRT}"
 
   # there is no authority parameters while creating a request file
   grep -Ev '^authorityKeyIdentifier =' <<< "${conffile_txt}" \
   | tee "${TMPCONFFILE_REQ}" >/dev/null 2>&1 \
-    || log_fail_rc $? "Error creating temp req conffile: ${TMPCONFFILE_REQ}"
+    || trap_fatal -- $? "Error creating temp req conffile: ${TMPCONFFILE_REQ}"
 }; _mk_openssl_conffile
 
 # CREATE KEY
 _mk_pk() {
   unset _mk_pk
 
-  log_msg "Generating key ..."
+  log_info "Generating key ..."
 
   local -a cmd_key=(
     openssl genpkey -algorithm RSA -outform PEM
@@ -868,7 +1573,7 @@ _mk_pk() {
   else
     "${cmd_key[@]}"
   fi
-  log_fail_rc $? "Couldn't generate key"
+  trap_fatal -- $? "Couldn't generate key"
 }; _mk_pk
 
 if [[ -n "${CONF[issuer-cert]}" ]]; then
@@ -893,17 +1598,17 @@ if [[ -n "${CONF[issuer-cert]}" ]]; then
     || cmd_cert+=(-extensions 'req-ext')
 
   {
-    log_msg "Generating CSR file ..."
+    log_info "Generating CSR file ..."
     if [[ -n "${CONF[passfile]+x}" ]]; then
       "${cmd_req[@]}" -passin file:<(cat - <<< "${MYSSL_KEYPASS}")
     else
       "${cmd_req[@]}"
     fi
-    log_fail_rc $? "Couldn't generate CSR file"
+    trap_fatal -- $? "Couldn't generate CSR file"
   }
 
   {
-    log_msg "Generating cert ..."
+    log_info "Generating cert ..."
     if [[ -n "${CONF[ca_passfile]+x}" ]]; then
       "${cmd_cert[@]}" \
         -CAkey <(cat - <<< "${MYSSL_CA_KEY}") \
@@ -911,24 +1616,24 @@ if [[ -n "${CONF[issuer-cert]}" ]]; then
     else
       "${cmd_cert[@]}" -CAkey <(cat - <<< "${MYSSL_CA_KEY}")
     fi
-    log_fail_rc $? "Couldn't generate cert"
+    trap_fatal -- $? "Couldn't generate cert"
   }
 
   {
-    log_msg "Creating certificate bundle ..."
+    log_info "Creating certificate bundle ..."
     # https://serverfault.com/a/755815
     issuer_pkcs7="$(openssl crl2pkcs7 -nocrl -certfile "${CONF[issuer-cert]}")"
-    log_fail_rc $? "Can't parse ISSUER_CERT"
+    trap_fatal -- $? "Can't parse ISSUER_CERT"
 
     openssl pkcs7 -print_certs <<< "${issuer_pkcs7}" | grep -v \
       -e '^\s*$' -e '\s=\s' -e '^\s*subject=[^=]' -e '^\s*issuer=[^=]' \
     | tee -a "${TMPCERTFILE}" >/dev/null
-    log_fail_rc $? "Couldn't create bundle"
+    trap_fatal -- $? "Couldn't create bundle"
   }
 
-  log_msg "Vertifying cert against CA ..."
+  log_info "Vertifying cert against CA ..."
   openssl verify -CAfile "${CONF[issuer-cert]}" "${TMPCERTFILE}"
-  log_fail_rc $? "Verification failed"
+  trap_fatal -- $? "Verification failed"
 else
   # CREATE SELF-SIGNED CERT
 
@@ -940,13 +1645,13 @@ else
   ${IS_CA} || cmd_cert+=(-extensions 'req-ext')
 
   {
-    log_msg "Generating cert ..."
+    log_info "Generating cert ..."
     if [[ -n "${CONF[passfile]+x}" ]]; then
       "${cmd_cert[@]}" -passin file:<(cat - <<< "${MYSSL_KEYPASS}")
     else
       "${cmd_cert[@]}"
     fi
-    log_fail_rc $? "Couldn't generate cert"
+    trap_fatal -- $? "Couldn't generate cert"
   }
 fi
 
@@ -956,30 +1661,30 @@ _final() {
   [[ (-f "${TMPCERTFILE}" && -f "${TMPKEYFILE}") ]] || return 1
 
   mkdir -p -- "${OUTDIR}"
-  log_fail_rc $? "Couldn't create destination directory: ${OUTDIR}"
+  trap_fatal -- $? "Couldn't create destination directory: ${OUTDIR}"
 
   if ${CONF[merge]}; then
-    log_msg "Merging key into cert ..."
+    log_info "Merging key into cert ..."
     cat -- "${TMPKEYFILE}" >> "${TMPCERTFILE}"
-    log_fail_rc $? "Couldn't merge to ${TMPCERTFILE}"
+    trap_fatal -- $? "Couldn't merge to ${TMPCERTFILE}"
     chmod 0600 -- "${TMPCERTFILE}"
-    log_fail_rc $? "Couldn't chmod 0600 ${TMPCERTFILE}"
-    CERTFILE="${CERTFILE%.*}.pem"
+    trap_fatal -- $? "Couldn't chmod 0600 ${TMPCERTFILE}"
+    CERTFILE="${MERGEFILE}"
   else
     chmod 0600 -- "${TMPKEYFILE}"
     mv -- "${TMPKEYFILE}" "${KEYFILE}"
-    log_fail_rc $? "Couldn't move to ${KEYFILE}"
+    trap_fatal -- $? "Couldn't move to ${KEYFILE}"
   fi
   mv -- "${TMPCERTFILE}" "${CERTFILE}"
-  log_fail_rc $? "Couldn't move to ${CERTFILE}"
+  trap_fatal -- $? "Couldn't move to ${CERTFILE}"
 
   rm -f "${TMPDIR}"/*
 
-  log_msg "
+  text_decore "
     Generated to $(realpath -- "${OUTDIR}")
     DONE
-  "
-}; _final || log_fail_rc 1 "Something went wrong"
+  " | log_info
+}; _final || trap_fatal -- $? "Something went wrong"
 
 ## generate CA key and cert
 # openssl genrsa -out ./certs/ca.key 4096
