@@ -240,7 +240,7 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   #
   #####
   ##### {/CONF}
-  
+
   # FUNCTIONS:
   # * file2dest [-f] [--tag TAG] [--tag-prefix TAG_PREFIX] [--] SOURCE [DEST...]
   # * print_stderr MSG...               (stdin MSG is supported)
@@ -272,11 +272,11 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   #   (stdin FILE_TEXT is supported)
   # * sed_quote_pattern PATTERN         (stdin PATTERN is supported)
   # * sed_quote_replace REPLACE         (stdin REPLACE is supported)
-  
+
   ##############################
   ##### PRINTING / LOGGING #####
   ##############################
-  
+
   # Print SOURCE file to DEST files. Logging via stderr
   # with prefixed DEST. Prefixes:
   # '{{ success }}' - successfully generated
@@ -314,12 +314,12 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local FORCE=false
     local TAG
     local TAG_PREFIX='#'
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --            ) endopts=true ;;
         -f|--force    ) FORCE=true ;;
@@ -330,30 +330,30 @@ LOG_TOOLNAME="$(basename -- "${0}")"
             && source="${1}" || DESTS+=("${1}")
         ;;
       esac
-  
+
       shift
     done
-  
+
     SOURCE_TXT="$(cat -- "${source}" 2>/dev/null)" || return 4
-  
+
     [[ ${#DESTS[@]} -lt 1 ]] && DESTS+=(/dev/stdout)
-  
+
     local dir
     local real
     local dest_content
     local rc=0
     local f; for f in "${DESTS[@]}"; do
       real="$(realpath -m -- "${f}" 2>/dev/null)"
-  
+
       ! ${FORCE} && [[ -f "${real}" ]] && {
         rc=$(rc_add ${rc} 1)
         print_stderr "{{ skipped }}${f}"
         continue
       }
-  
+
       dir="$(dirname -- "${f}" 2>/dev/null)" \
       && mkdir -p -- "${dir}" 2>/dev/null
-  
+
       [[ -n "${TAG}" ]] && {
         [[ -f "${f}" ]] && dest_content="$(cat "${f}" 2>/dev/null)"
         SOURCE_TXT="$(
@@ -361,7 +361,7 @@ LOG_TOOLNAME="$(basename -- "${0}")"
             -- "${TAG}" "${SOURCE_TXT}" "${dest_content}"
         )"
       }
-  
+
       (cat <<< "${SOURCE_TXT}" > "${f}") 2>/dev/null && {
         # don't bother logging for generated to stdout and other devnulls
         if [[ -f ${real} ]]; then print_stderr "{{ success }}${f}"; fi
@@ -371,18 +371,18 @@ LOG_TOOLNAME="$(basename -- "${0}")"
         continue
       }
     done
-  
+
     return ${rc}
   }
-  
+
   print_stderr() {
     print_stdout "${@}" >/dev/stderr
   }
-  
+
   print_stdout() {
     [[ ${#} -gt 0 ]] && printf -- '%s\n' "${@}" || cat
   }
-  
+
   # Log to stderr prefixed with ${LOG_TOOLNAME} and log type
   #
   # OPTIONS
@@ -422,67 +422,69 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     LEVEL="${LOG_ERR_LEVEL}" \
     _log_type err "${@}"
   }
-  
+
   _log_type() {
     local TYPE="${1}"
     local TAG=major
     local -a MSGS
     shift
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --        ) endopts=true ;;
         -t|--tag  ) shift; TAG="${1:-${TAG}}" ;;
         *         ) MSGS+=("${1}") ;;
       esac
-  
+
       shift
     done
-  
+
     [[ "${TAG}" == none ]] && TAG=major
     LEVEL="${LEVEL:-major}"
-  
+
     local -A level2num=( [none]=0 [major]=1 [minor]=2 )
     local req_level="${level2num["${LEVEL}"]:-${level2num[major]}}"
     local log_tag="${level2num["${TAG}"]:-${level2num[major]}}"
-  
+
     # If reqired level is lower then current log tag, nothing to do here
     [[ ${req_level} -lt ${log_tag} ]] && return 0
-  
+
     local prefix="${LOG_TOOLNAME:+"${LOG_TOOLNAME}:"}${TYPE}"
     print_stdout "${MSGS[@]}" | sed -e 's/^/['"${prefix}"'] /' | print_stderr
   }
-  
+
   ################
   ##### TEXT #####
   ################
-  
+
   text_ltrim() {
     print_stdout "${@}" | sed 's/^\s\+//'
   }
-  
+
   text_rtrim() {
     print_stdout "${@}" | sed 's/\s\+$//'
   }
-  
+
   text_trim() {
     print_stdout "${@}" | sed -e 's/^\s\+//' -e 's/\s\+$//'
   }
-  
+
   # remove blank and space only lines
   text_rmblank() {
     print_stdout "${@}" | grep -vx '\s*'
+    return 0
   }
-  
+
   # apply trim and rmblank
   text_clean() {
     text_trim "${@}" | text_rmblank
+    return 0
   }
-  
+
   # Decoreate text:
   # * apply clean
   # * remove starting '.'
@@ -494,11 +496,11 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   text_decore() {
     text_clean "${@}" | sed 's/^\.//'
   }
-  
+
   ####################
   ##### TRAPPING #####
   ####################
-  
+
   # Detect one of help options: -h, -?, --help
   #
   # USAGE:
@@ -510,27 +512,27 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   #         invalid args are printed to stdout
   trap_help_opt() {
     local is_help=false
-  
+
     [[ "${1}" =~ ^(-h|-\?|--help)$ ]] \
       && is_help=true && shift
-  
+
     local -a inval
     while :; do
       [[ -n "${1+x}" ]] || break
       inval+=("${1}")
       shift
     done
-  
+
     ! ${is_help} && return 1
-  
+
     ${is_help} && [[ ${#inval[@]} -gt 0 ]] && {
       print_stdout "${inval[@]}"
       return 2
     }
-  
+
     return 0
   }
-  
+
   # Exit with RC if it's > 0. If no MSG, no err message will be logged.
   # * RC is required to be numeric!
   # * not to be used in scripts sourced to ~/.bashrc!
@@ -543,7 +545,7 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local rc
     local -a msgs
     local decore=false
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
@@ -555,23 +557,23 @@ LOG_TOOLNAME="$(basename -- "${0}")"
       esac
       shift
     done
-  
+
     [[ -n "${rc+x}" ]] || return 0
     [[ $rc -gt 0 ]] || return ${rc}
-  
+
     [[ ${#msgs[@]} -gt 0 ]] && {
       local filter=(print_stdout)
       ${decore} && filter=(text_decore)
       "${filter[@]}" "${msgs[@]}" | _log_type fatal
     }
-  
+
     exit ${rc}
   }
-  
+
   ################
   ##### TAGS #####
   ################
-  
+
   # USAGE:
   #   tag_node_set [--prefix PREFIX] [--suffix SUFFIX] \
   #     [--] TAG CONTENT TEXT...
@@ -583,12 +585,12 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local text
     local prefix
     local suffix
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --        ) endopts=true ;;
         --prefix  ) shift; prefix="${1}" ;;
@@ -603,30 +605,30 @@ LOG_TOOLNAME="$(basename -- "${0}")"
           fi
           ;;
       esac
-  
+
       shift
     done
-  
+
     [[ -n "${text+x}" ]] || text="$(cat)"
-  
+
     local open="$(_tag_mk_openline "${tag}" "${prefix}" "${suffix}")"
     local close="$(_tag_mk_closeline "${tag}" "${prefix}" "${suffix}")"
-  
+
     local add_text
     add_text="$(printf '%s\n%s\n%s\n' \
       "${open}" "$(sed 's/^/  /' <<< "${content}")" "${close}")"
-  
+
     local range
     range="$(_tag_get_lines_range "${open}" "${close}" "${text}")" || {
       printf '%s\n' "${text:+${text}$'\n'}${add_text}"
       return
     }
-  
+
     head -n "$(( ${range%%,*} - 1 ))" <<< "${text}"
     printf '%s\n' "${add_text}"
     tail -n +"$(( ${range##*,} + 1 ))" <<< "${text}"
   }
-  
+
   # USAGE:
   #   tag_node_get [--prefix PREFIX] [--suffix SUFFIX] \
   #     [--strip] [--] TAG TEXT...
@@ -641,12 +643,12 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local prefix
     local suffix
     local strip=false
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --        ) endopts=true ;;
         --prefix  ) shift; prefix="${1}" ;;
@@ -658,26 +660,26 @@ LOG_TOOLNAME="$(basename -- "${0}")"
             || tag="${1}"
           ;;
       esac
-  
+
       shift
     done
-  
+
     [[ -n "${text+x}" ]] || text="$(cat)"
-  
+
     local open="$(_tag_mk_openline "${tag}" "${prefix}" "${suffix}")"
     local close="$(_tag_mk_closeline "${tag}" "${prefix}" "${suffix}")"
-  
+
     local range
     range="$(_tag_get_lines_range "${open}" "${close}" "${text}")" || {
       return 1
     }
-  
+
     local -a filter=(cat)
     ${strip} && filter=(sed -e '1d;$d;s/^  //')
-  
+
     sed -e "${range}!d" <<< "${text}" | "${filter[@]}"
   }
-  
+
   # USAGE:
   #   tag_node_rm [--prefix PREFIX] \
   #     [--suffix SUFFIX] [--] TAG TEXT...
@@ -691,12 +693,12 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local text
     local prefix
     local suffix
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --        ) endopts=true ;;
         --prefix  ) shift; prefix="${1}" ;;
@@ -707,121 +709,121 @@ LOG_TOOLNAME="$(basename -- "${0}")"
             || tag="${1}"
           ;;
       esac
-  
+
       shift
     done
-  
+
     [[ -n "${text+x}" ]] || text="$(cat)"
-  
+
     local open="$(_tag_mk_openline "${tag}" "${prefix}" "${suffix}")"
     local close="$(_tag_mk_closeline "${tag}" "${prefix}" "${suffix}")"
-  
+
     local range
     range="$(_tag_get_lines_range "${open}" "${close}" "${text}")" || {
       print_stdout "${text}"
       return 1
     }
-  
+
     sed -e "${range}d" <<< "${text}"
   }
-  
+
   # RC > 0 or comma separated open and close line numbers
   _tag_get_lines_range() {
     local open="${1}"
     local close="${2}"
     local text="${3}"
-  
+
     local close_rex
     close_rex="$(sed_quote_pattern "${close}")"
-  
+
     local lines_numbered
     lines_numbered="$(
       grep -m 1 -n -A 9999999 -Fx "${open}" <<< "${text}" \
       | grep -m 1 -B 9999999 -e "^[0-9]\+-${close_rex}$"
     )" || return $?
-  
+
     sed -e 's/^\([0-9]\+\).*/\1/' -n -e '1p;$p' <<< "${lines_numbered}" \
     | xargs | tr ' ' ','
   }
-  
+
   _tag_mk_openline() {
     local tag="${1}"
     local prefix="${2}"
     local suffix="${3}"
     printf -- '%s' "${prefix}${tag}${suffix}"
   }
-  
+
   _tag_mk_closeline() {
     local tag="${1}"
     local prefix="${2}"
     local suffix="${3}"
     printf -- '%s' "${prefix}/${tag}${suffix}"
   }
-  
+
   #######################
   ##### RETURN CODE #####
   #######################
-  
+
   rc_add() {
     echo $(( ${1} | ${2} ))
   }
-  
+
   rc_has() {
     [[ $(( ${1} & ${2} )) -eq ${2} ]]
   }
-  
+
   ######################
   ##### VALIDATION #####
   ######################
-  
+
   check_bool() {
     [[ "${1}" =~ ^(true|false)$ ]]
   }
-  
+
   check_unix_login() {
     # https://unix.stackexchange.com/questions/157426/what-is-the-regex-to-validate-linux-users
     local rex='[a-z_]([a-z0-9_-]{0,31}|[a-z0-9_-]{0,30}\$)'
     grep -qEx -- "${rex}" <<< "${1}"
   }
-  
+
   check_ip4() {
     local seg_rex='(0|[1-9][0-9]*)'
-  
+
     grep -qxE "(${seg_rex}\.){3}${seg_rex}" <<< "${1}" || return 1
-  
+
     local segments
     mapfile -t segments <<< "$(tr '.' '\n' <<< "${1}")"
     local seg; for seg in "${segments[@]}"; do
       [[ "${seg}" -gt 255 ]] && return 1
     done
-  
+
     return 0
   }
-  
+
   check_loopback_ip4() {
     check_ip4 "${1}" && grep -q '^127' <<< "${1}"
   }
-  
+
   #####################
   ##### PROFILING #####
   #####################
-  
+
   profiler_init() {
     ${PROFILER_ENABLED-false} || return
     [[ -n "${PROFILER_TIMESTAMP}" ]] && return
-  
+
     PROFILER_TIMESTAMP=$(( $(date +%s%N) / 1000000 ))
     export PROFILER_TIMESTAMP
   }
-  
+
   profiler_run() {
     ${PROFILER_ENABLED-false} || return
     [[ -n "${PROFILER_TIMESTAMP}" ]] || return
-  
+
     local message="${1}"
-  
+
     local time=$(( ($(date +%s%N) / 1000000) - ${PROFILER_TIMESTAMP} ))
-  
+
     {
       printf '%6s.%03d' $(( time / 1000 )) $(( time % 1000 ))
       [[ -n "${message}" ]] \
@@ -829,11 +831,11 @@ LOG_TOOLNAME="$(basename -- "${0}")"
         || printf '\n'
     } | _log_type profile
   }
-  
+
   ################
   ##### MISC #####
   ################
-  
+
   # Generate a random value, lower case latters only by default
   # https://unix.stackexchange.com/a/230676
   #
@@ -852,7 +854,7 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local special=false
     local uc=false
     local filter='a-z'
-  
+
     while :; do
       [[ -n "${1+x}" ]] || break
       case "${1}" in
@@ -863,12 +865,12 @@ LOG_TOOLNAME="$(basename -- "${0}")"
       esac
       shift
     done
-  
+
     ${num} && filter+='0-9'; ${uc} && filter+='A-Z'
     ${special} && filter+='!"#$%&'\''()*+,-./:;<=>?@[\]^_`{|}~'
     LC_ALL=C tr -dc "${filter}" </dev/urandom | fold -w "${len}" | head -n 1
   }
-  
+
   # Get unique lines preserving lines order. By default top unique
   # lines are prioritized
   #
@@ -883,27 +885,27 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   uniq_ordered() {
     local -a revfilter=(cat)
     local -a files
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --            ) endopts=true ;;
         -r|--reverse  ) revfilter=(tac) ;;
         *             ) files+=("${1}") ;;
       esac
-  
+
       shift
     done
-  
+
     # https://unix.stackexchange.com/a/194790
     cat "${files[@]}" | "${revfilter[@]}" \
     | cat -n | sort -k2 -k1n | uniq -f1 | sort -nk1,1 | cut -f2- \
     | "${revfilter[@]}"
   }
-  
+
   # Compile template FILE replacing '{{ KEY }}' with VALUE.
   # In case of duplicated --KEY option last wins. Nothing
   # happens if FILE path is invalid.
@@ -930,12 +932,12 @@ LOG_TOOLNAME="$(basename -- "${0}")"
     local first=false
     local single=false
     local only=false
-  
+
     local endopts=false
     local arg; while :; do
       [[ -n "${1+x}" ]] || break
       ${endopts} && arg='*' || arg="${1}"
-  
+
       case "${arg}" in
         --  ) endopts=true ;;
         -o  ) only=true ;;
@@ -944,20 +946,20 @@ LOG_TOOLNAME="$(basename -- "${0}")"
         --* ) shift; kv[${arg:2}]="${1}" ;;
         *   ) files+=("${1}") ;;
       esac
-  
+
       shift
     done
-  
+
     local key
     local value
     for key in "${!kv[@]}"; do
       value="$(sed_quote_replace "${kv["${key}"]}")"
       kv["${key}"]="${value}"
     done
-  
+
     local template
     template="$(cat -- "${files[@]}" 2>/dev/null)"
-  
+
     local -a filter
     local expression
     if ${only}; then
@@ -971,28 +973,28 @@ LOG_TOOLNAME="$(basename -- "${0}")"
         ! ${single} && expression+='g'
         ${only} && filter+=(-n) && expression+='p'
         filter+=("${expression}")
-  
+
         template="$("${filter[@]}" <<< "${template}")"
       done
     else
       # lighter than with ONLY option
-  
+
       # initially passthrough filter
       filter=(sed -e 's/^/&/')
-  
+
       for key in "${!kv[@]}"; do
         key="$(sed_quote_pattern "${key}")"
         expression="{{\s*${key}\s*}}/${kv["${key}"]}"
         ${first} && expression="^${expression}"
         filter+=(-e "s/${expression}/g")
       done
-  
+
       template="$("${filter[@]}" <<< "${template}")"
     fi
-  
+
     [[ -n "${template}" ]] && cat <<< "${template}"
   }
-  
+
   # https://gist.github.com/varlogerr/2c058af053921f1e9a0ddc39ab854577#file-sed-quote
   sed_quote_pattern() {
     sed -e 's/[]\/$*.^[]/\\&/g' <<< "${1-$(cat)}"
@@ -1000,11 +1002,11 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   sed_quote_replace() {
     sed -e 's/[\/&]/\\&/g' <<< "${1-$(cat)}"
   }
-  
+
   ##########################
   ##### OVERRIDES DEMO #####
   ##########################
-  
+
   # ## In most cases it's the first candidate for override
   #
   # eval "$(typeset -f file2dest | sed '1s/ \?(/_overriden_ (/')"
@@ -1022,7 +1024,7 @@ LOG_TOOLNAME="$(basename -- "${0}")"
   #   # https://unix.stackexchange.com/a/73180
   #   return "${PIPESTATUS[0]}"
   # }
-  
+
   # ## A lighter version of tags, less secure, but fine for personal data
   # ## sets. Disregards suffix and prefix, suffix is hardcoded to '#'
   #
