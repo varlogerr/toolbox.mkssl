@@ -517,6 +517,36 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
   fi # Create self-signed cert
 
   {
+    ###################
+    # Verify key-cert #
+    ###################
+
+    # https://www.ssl247.com/knowledge-base/detail/how-do-i-verify-that-a-private-key-matches-a-certificate-openssl-1527076112539/ka03l0000015hscaay/
+    declare pk_modulus_hash cert_modulus_hash
+    declare pk_modulus_cmd=(
+      openssl rsa -modulus -noout
+    )
+
+    if ${MYSSL_CONF[encrypt]}; then
+      [[ -n "${MYSSL_PKPASS+x}" ]] && pk_modulus_cmd+=(-passin env:MYSSL_PKPASS)
+    fi
+
+    pk_modulus_hash="$(
+      "${pk_modulus_cmd[@]}" -in <(key="${PK}" printenv key) \
+      | openssl sha256 | cut -d' ' -f2-
+    )"
+    cert_modulus_hash="$(
+      openssl x509 -modulus -noout -in <(cert="${CERT}" printenv cert) \
+      | openssl sha256 | cut -d' ' -f2-
+    )"
+
+    [[ "${pk_modulus_hash}" == "${cert_modulus_hash}" ]] || {
+      myssl log_fatal "Cert and PK checksum comparison failed."
+      exit 1
+    }
+  } # Verify key-cert
+
+  {
     #################
     # Install files #
     #################
