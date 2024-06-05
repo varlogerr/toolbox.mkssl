@@ -72,7 +72,7 @@
 #  ,  # (Alternative) Generate configuration file by stdout redirection:
 #  ,  {{ tool }} gen-conffile > {{ conffile }}
 #  ,
-#  ,  # Edit the configuration file:
+#  ,  # Edit CONFBLOCK in the configuration file:
 #  ,  vim {{ conffile }}
 #  ,
 #   Generate certificates:
