@@ -308,6 +308,23 @@ myssl() (
           -e 's/^,//'
   }
 
+  # USAGE:
+  #   # RC=0 - files exist, existing files in the output
+  #   # RC=1 - none of files exist, blank output
+  #   files_exist FILE...
+  files_exist() {
+    declare -a exist
+
+    declare f; for f in "${@}"; do
+      [[ -e "${f}" ]] && exist+=("${f}")
+    done
+
+    [[ ${#exist[@]} -lt 1 ]] && return 1
+
+    printf -- '%s\n' "${exist[@]}"
+    return 0
+  }
+
   sed_quote_replace() { sed -e 's/[\/&]/\\&/g' <<< "${1-$(cat)}"; }
 
   "${@}"
@@ -416,20 +433,21 @@ if [[ "${ARGS_IN[0]}" == gen-conffile ]]; then
 
   parse_common_args
 
-  if [[ -n "${CONFFILE+x}" ]]; then
-    [[ -f "${CONFFILE}" ]] && ! "${FLAGS[force]}" && {
-      myssl log_fatal "Can't override existing file ${CONFFILE}. For help issue:" "  $(basename -- "${0}") --help"
-      exit 1
-    }
-
-    declare conffile_dir; conffile_dir="$(dirname -- "${CONFFILE}")"
-
-    (set -x; mkdir -p -- "${conffile_dir}") || exit
-    (set -o pipefail; myssl get_conffile | (set -x; tee -- "${CONFFILE}" >/dev/null)) || exit
-    (set -x; chmod +x "${CONFFILE}")
-  else
+  [[ -z "${CONFFILE+x}" ]] && {
     myssl get_conffile
-  fi
+    exit 0
+  }
+
+  myssl files_exist "${CONFFILE}" >/dev/null && ! "${FLAGS[force]}" && {
+    myssl log_fatal "Can't override existing file ${CONFFILE}. For help issue:" "  $(basename -- "${0}") --help"
+    exit 1
+  }
+
+  declare conffile_dir; conffile_dir="$(dirname -- "${CONFFILE}")"
+
+  (set -x; mkdir -p -- "${conffile_dir}") || exit
+  (set -o pipefail; myssl get_conffile | (set -x; tee -- "${CONFFILE}" >/dev/null)) || exit
+  (set -x; chmod +x "${CONFFILE}")
 
   exit
 fi
