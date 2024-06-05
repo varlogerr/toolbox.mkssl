@@ -368,7 +368,7 @@ myssl_gencerts_init() {
 }
 
 # Stop here if the file is sourced
-! (return &>/dev/null) || return
+(return &>/dev/null) && return 0
 
 ##############
 #   ACTION   #
@@ -521,7 +521,9 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
     # Verify key-cert #
     ###################
 
+    # https://digicert.leaderssl.fr/articles/462-how-to-verify-compliance-of-a-private-key-with-the-ssl-certificate-and-csr
     # https://www.ssl247.com/knowledge-base/detail/how-do-i-verify-that-a-private-key-matches-a-certificate-openssl-1527076112539/ka03l0000015hscaay/
+
     declare pk_modulus_hash cert_modulus_hash
     declare pk_modulus_cmd=(
       openssl rsa -modulus -noout
@@ -552,7 +554,7 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
     #################
 
     declare -A install_map=(
-      # [EXT:MODE]=CONTENT
+      # [EXT:MODE]=FILE_CONTENT
       ['crt:0644']="${CERT}"
       ['key:0600']="${PK}"
     )
@@ -574,7 +576,7 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
       content="${install_map[${k}]}" printenv content | (
         set -o pipefail
         (
-          set -x; install --mode="${mode}" <(cat) -- "${MYSSL_CONF[dest-prefix]}.${ext}"
+          set -x; install --mode="${mode}" -- <(cat) "${MYSSL_CONF[dest-prefix]}.${ext}"
         ) 3>&2 2>&1 1>&3- \
         | grep -v '^+\+\s\+cat$'
       ) 3>&2 2>&1 1>&3- || exit 1
