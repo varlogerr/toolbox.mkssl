@@ -55,6 +55,10 @@
 # # {{/ CONFBLOCK }}
 #
 # # {{ HELP_USAGE }}
+#   Usage:
+#   =====
+#  ,  {{ tool }} gen-conffile|gen-certs ARG...
+#  ,
 #   Generate conffile:
 #   =================
 #  ,
@@ -258,7 +262,7 @@ myssl() (
 
   # USAGE:
   #   # Using map
-  #   declare -A mymap=([TPL_KEY]=RELACE_VALUE)
+  #   declare -A mymap=([TPL_KEY]=REPLACE_VALUE)
   #   template_compile mymap < TPL_FILE
   #
   #   # Using key-value args
@@ -404,10 +408,10 @@ MYSSL_EXECUTOR_Bg2VTs1Kyt=true
   exit 1
 }
 
+declare -a ARGS_IN=("${@}")
 declare -a FLAGS=(
   [force]=false
 )
-declare -a ARGS_IN=("${@}")
 declare CONFFILE
 parse_common_args() {
   declare arg
@@ -454,6 +458,8 @@ fi
 
 if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
   unset "ARGS_IN[0]"
+
+  parse_common_args
 
   [[ -n "${2+x}" ]] || {
     myssl log_fatal "Argument required. For help issue:" "  $(basename -- "${0}") --help"
@@ -585,11 +591,16 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
     declare dest_dir; dest_dir="$(dirname -- "${MYSSL_CONF[dest-prefix]}")"
     (set -x; mkdir -p -- "${dest_dir}") || exit 1
 
-    # TODO: check for files overwrite
-
-    declare ext mode
+    declare ext mode dest
     declare k; for k in "${!install_map[@]}"; do
-      ext="${k%%:*}"; mode="${k##*:}"
+      ext="${k%%:*}"
+      mode="${k##*:}"
+      dest="${MYSSL_CONF[dest-prefix]}.${ext}"
+
+      myssl files_exist "${dest}" >/dev/null && ! "${FLAGS[force]}" && {
+        myssl log_fatal "Can't override existing file ${dest}. For help issue:" "  $(basename -- "${0}") --help"
+        exit 1
+      }
 
       content="${install_map[${k}]}" printenv content | (
         set -o pipefail
