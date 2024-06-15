@@ -61,11 +61,9 @@
 #  ,
 #   Generate conffile:
 #   =================
-#  ,
 #  ,  # Available flags:
-#  ,  # -f, --force   Force override existing conffile in case it's passed
-#  ,  #               as an argument, otherwise will fail when destination
-#  ,  #               file exists
+#  ,  # -f, --force   Force override existing conffile in case it's passed as an
+#  ,  #               argument, otherwise will fail when destination file exists
 #  ,  {{ tool }} gen-conffile [-f] [CONFFILE]
 #  ,
 #  ,  # DEMO:
@@ -81,11 +79,11 @@
 #  ,
 #   Generate certificates:
 #   =====================
-#  ,
 #  ,  # Available flags:
-#  ,  # -f, --force   Force override existing cert files, otherwise will
-#  ,  #               fail when destination files exist
-#  ,  {{ tool }} gen-certs [-f] [CONFFILE]
+#  ,  # -f, --force   Force override existing cert files, otherwise will fail
+#  ,  #               when destination files exist
+#  ,  # --merge       Merge key and cert into a single *.pem file
+#  ,  {{ tool }} gen-certs [-f] [--merge] [CONFFILE]
 #  ,
 #  ,  # DEMO:
 #  ,
@@ -409,9 +407,12 @@ MYSSL_EXECUTOR_Bg2VTs1Kyt=true
 }
 
 declare -a ARGS_IN=("${@}")
-declare -a FLAGS=(
+
+declare -A FLAGS=(
   [force]=false
+  [merge]=false
 )
+
 declare CONFFILE
 parse_common_args() {
   declare arg
@@ -432,10 +433,30 @@ parse_common_args() {
   done
 }
 
+parse_genconffile_args() {
+  # Placeholder
+  :
+}
+
+parse_gencerts_args() {
+  declare arg
+  declare ix; for ix in "${!ARGS_IN[@]}"; do
+    arg="${ARGS_IN[${ix}]}"
+
+    case "${arg}" in
+      --merge )
+        FLAGS[merge]=true
+        unset "ARGS_IN[$ix]"
+        ;;
+    esac
+  done
+}
+
 if [[ "${ARGS_IN[0]}" == gen-conffile ]]; then
   unset "ARGS_IN[0]"
 
   parse_common_args
+  parse_genconffile_args
 
   [[ -z "${CONFFILE+x}" ]] && {
     myssl get_conffile
@@ -460,6 +481,7 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
   unset "ARGS_IN[0]"
 
   parse_common_args
+  parse_gencerts_args
 
   [[ -n "${2+x}" ]] || {
     myssl log_fatal "Argument required. For help issue:" "  $(basename -- "${0}") --help"
@@ -583,7 +605,7 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
       ['key:0600']="${PK}"
     )
 
-    ${MYSSL_CONF[merge]} && {
+    (${MYSSL_CONF[merge]} || ${FLAGS[merge]}) && {
       install_map=(['pem:0600']="${CERT}${CERT:+$'\n'}${PK}")
     }
 
