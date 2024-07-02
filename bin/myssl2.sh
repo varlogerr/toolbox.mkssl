@@ -33,7 +33,8 @@
 #     #
 #     # EXTRA DISTINGUISHED NAME
 #     #
-#     # ISO 3166-1 country code. Example: US
+#     # ISO 3166-1 country code (https://en.wikipedia.org/wiki/ISO_3166-1#Codes).
+#     # Example: US
 #     [country]="{{ country }}"
 #     # State or Province name. Example: New York
 #     [state]="{{ state }}"
@@ -527,9 +528,7 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
       [[ -n "${MYSSL_PKPASS+x}" ]] && pk_cmd+=(-pass env:MYSSL_PKPASS)
     fi
 
-    PK="$(
-      (set -x; "${pk_cmd[@]}")
-    )" || exit 1
+    PK="$(set -x; "${pk_cmd[@]}")" || exit 1
   } # Generate PK
 
   declare CERT
@@ -601,33 +600,32 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
 
     declare -A install_map=(
       # [EXT:MODE]=FILE_CONTENT
-      ['crt:0644']="${CERT}"
-      ['key:0600']="${PK}"
+      ['.crt:0644']="${CERT}"
+      ['.key:0600']="${PK}"
     )
 
     (${MYSSL_CONF[merge]} || ${FLAGS[merge]}) && {
-      install_map=(['pem:0600']="${CERT}${CERT:+$'\n'}${PK}")
+      install_map=(['.pem:0600']="${CERT}${CERT:+$'\n'}${PK}")
     }
 
     # Create destination directory
     declare dest_dir; dest_dir="$(dirname -- "${MYSSL_CONF[dest-prefix]}")"
     (set -x; mkdir -p -- "${dest_dir}") || exit 1
 
-    declare ext mode dest
+    declare dest mode
     declare k; for k in "${!install_map[@]}"; do
-      ext="${k%%:*}"
+      dest="${MYSSL_CONF[dest-prefix]}${k%:*}"
       mode="${k##*:}"
-      dest="${MYSSL_CONF[dest-prefix]}.${ext}"
 
       myssl files_exist "${dest}" >/dev/null && ! "${FLAGS[force]}" && {
         myssl log_fatal "Can't override existing file ${dest}. For help issue:" "  $(basename -- "${0}") --help"
         exit 1
       }
 
-      content="${install_map[${k}]}" printenv content | (
+      (content="${install_map[${k}]}" printenv content) | (
         set -o pipefail
         (
-          set -x; install --mode="${mode}" -- <(cat) "${MYSSL_CONF[dest-prefix]}.${ext}"
+          set -x; install --mode="${mode}" -- <(cat) "${dest}"
         ) 3>&2 2>&1 1>&3- \
         | grep -v '^+\+\s\+cat$'
       ) 3>&2 2>&1 1>&3- || exit 1
