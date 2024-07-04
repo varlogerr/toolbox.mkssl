@@ -570,9 +570,8 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
     # https://www.ssl247.com/knowledge-base/detail/how-do-i-verify-that-a-private-key-matches-a-certificate-openssl-1527076112539/ka03l0000015hscaay/
 
     declare pk_modulus_hash cert_modulus_hash
-    declare pk_modulus_cmd=(
-      openssl rsa -modulus -noout
-    )
+    declare -a pk_modulus_cmd=(openssl rsa -modulus -noout)
+    declare -a crt_modulus_cmd=(openssl x509 -modulus -noout)
 
     if ${MYSSL_CONF[encrypt]}; then
       [[ -n "${MYSSL_PKPASS+x}" ]] && pk_modulus_cmd+=(-passin env:MYSSL_PKPASS)
@@ -583,12 +582,12 @@ if [[ "${ARGS_IN[0]}" == gen-certs ]]; then
       | openssl sha256 | cut -d' ' -f2-
     )"
     cert_modulus_hash="$(
-      openssl x509 -modulus -noout -in <(cert="${CERT}" printenv cert) \
+      "${crt_modulus_cmd[@]}" -in <(cat <<< "${CERT}") \
       | openssl sha256 | cut -d' ' -f2-
     )"
 
     [[ "${pk_modulus_hash}" == "${cert_modulus_hash}" ]] || {
-      myssl log_fatal "Cert and PK checksum comparison failed."
+      myssl log_fatal "Cert and PK modulus comparison failed."
       exit 1
     }
   } # Verify key-cert
