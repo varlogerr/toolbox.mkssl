@@ -84,7 +84,7 @@
 #  ,  # -f, --force   Force override existing cert files, otherwise will fail
 #  ,  #               when destination files exist
 #  ,  # --merge       Merge key and cert into a single *.pem file
-#  ,  {{ tool }} gen-certs [-f] [--merge] [CONFFILE]
+#  ,  {{ tool }} gen-certs [-f] [--merge] CONFFILE
 #  ,
 #  ,  # DEMO:
 #  ,
